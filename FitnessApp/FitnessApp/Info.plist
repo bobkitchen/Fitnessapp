@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.bobk.FitnessApp</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>fitnesscoach</string>
+			</array>
+		</dict>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>AI Fitness Coach needs access to your health data to calculate training metrics, track recovery, and provide personalized coaching recommendations.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>AI Fitness Coach may write workout summaries back to Apple Health.</string>
+</dict>
+</plist>
