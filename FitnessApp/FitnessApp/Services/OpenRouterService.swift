@@ -394,16 +394,16 @@ actor OpenRouterService {
 
 // MARK: - Memory Extraction Types
 
-struct ExtractedMemoryData {
+nonisolated struct ExtractedMemoryData: Sendable {
     let content: String
     let category: String
     let expiresInDays: Int?
 }
 
-struct MemoryExtractionResponse: Codable {
+nonisolated struct MemoryExtractionResponse: Codable, Sendable {
     let memories: [ExtractedMemory]
 
-    struct ExtractedMemory: Codable {
+    struct ExtractedMemory: Codable, Sendable {
         let content: String
         let category: String
         let expiresInDays: Int?
@@ -412,7 +412,7 @@ struct MemoryExtractionResponse: Codable {
 
 // MARK: - Data Types
 
-struct ChatMessage: Identifiable, Codable {
+nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     let id: UUID
     let role: MessageRole
     let content: String
@@ -426,7 +426,7 @@ struct ChatMessage: Identifiable, Codable {
     }
 }
 
-enum MessageRole: String, Codable {
+nonisolated enum MessageRole: String, Codable, Sendable {
     case user
     case assistant
     case system
@@ -434,12 +434,12 @@ enum MessageRole: String, Codable {
 
 // MARK: - API Response Types
 
-struct ChatCompletionResponse: Codable {
+nonisolated struct ChatCompletionResponse: Codable, Sendable {
     let id: String
     let choices: [Choice]
     let usage: Usage?
 
-    struct Choice: Codable {
+    struct Choice: Codable, Sendable {
         let index: Int
         let message: Message
         let finishReason: String?
@@ -450,12 +450,12 @@ struct ChatCompletionResponse: Codable {
         }
     }
 
-    struct Message: Codable {
+    struct Message: Codable, Sendable {
         let role: String
         let content: String
     }
 
-    struct Usage: Codable {
+    struct Usage: Codable, Sendable {
         let promptTokens: Int
         let completionTokens: Int
         let totalTokens: Int
@@ -468,33 +468,33 @@ struct ChatCompletionResponse: Codable {
     }
 }
 
-struct StreamChunk: Codable {
+nonisolated struct StreamChunk: Codable, Sendable {
     let choices: [StreamChoice]
 
-    struct StreamChoice: Codable {
+    struct StreamChoice: Codable, Sendable {
         let delta: Delta
     }
 
-    struct Delta: Codable {
+    struct Delta: Codable, Sendable {
         let content: String?
     }
 }
 
-struct OpenRouterErrorResponse: Codable {
+nonisolated struct OpenRouterErrorResponse: Codable, Sendable {
     let error: ErrorDetail
 
-    struct ErrorDetail: Codable {
+    struct ErrorDetail: Codable, Sendable {
         let message: String
         let type: String?
         let code: String?
     }
 }
 
-struct CreditsResponseWrapper: Codable {
+nonisolated struct CreditsResponseWrapper: Codable, Sendable {
     let data: CreditsResponse
 }
 
-struct CreditsResponse: Codable {
+nonisolated struct CreditsResponse: Codable, Sendable {
     let totalCredits: Double
     let totalUsage: Double
 

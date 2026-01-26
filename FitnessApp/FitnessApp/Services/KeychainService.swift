@@ -2,13 +2,13 @@ import Foundation
 import Security
 
 /// Service for securely storing sensitive data in the iOS Keychain
-struct KeychainService {
+nonisolated struct KeychainService: Sendable {
 
-    enum KeychainKey: String {
+    nonisolated enum KeychainKey: String, Sendable {
         case openRouterAPIKey = "com.bobk.FitnessApp.openRouterAPIKey"
     }
 
-    enum KeychainError: Error {
+    nonisolated enum KeychainError: Error, Sendable {
         case duplicateItem
         case itemNotFound
         case unexpectedStatus(OSStatus)
@@ -18,7 +18,7 @@ struct KeychainService {
     // MARK: - Save
 
     /// Save a string value to the Keychain
-    static func save(key: KeychainKey, value: String) throws {
+    nonisolated static func save(key: KeychainKey, value: String) throws {
         guard let data = value.data(using: .utf8) else {
             throw KeychainError.invalidData
         }
@@ -43,7 +43,7 @@ struct KeychainService {
     // MARK: - Read
 
     /// Read a string value from the Keychain
-    static func read(key: KeychainKey) throws -> String {
+    nonisolated static func read(key: KeychainKey) throws -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key.rawValue,
@@ -72,7 +72,7 @@ struct KeychainService {
     // MARK: - Delete
 
     /// Delete a value from the Keychain
-    static func delete(key: KeychainKey) throws {
+    nonisolated static func delete(key: KeychainKey) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key.rawValue
@@ -88,7 +88,7 @@ struct KeychainService {
     // MARK: - Check Existence
 
     /// Check if a key exists in the Keychain
-    static func exists(key: KeychainKey) -> Bool {
+    nonisolated static func exists(key: KeychainKey) -> Bool {
         do {
             _ = try read(key: key)
             return true
@@ -102,21 +102,23 @@ struct KeychainService {
 
 extension KeychainService {
 
+    @MainActor
     static func saveOpenRouterAPIKey(_ key: String) throws {
         try save(key: .openRouterAPIKey, value: key)
         UserDefaults.standard.set(true, forKey: "hasOpenRouterAPIKey")
     }
 
-    static func getOpenRouterAPIKey() -> String? {
+    nonisolated static func getOpenRouterAPIKey() -> String? {
         try? read(key: .openRouterAPIKey)
     }
 
+    @MainActor
     static func deleteOpenRouterAPIKey() throws {
         try delete(key: .openRouterAPIKey)
         UserDefaults.standard.set(false, forKey: "hasOpenRouterAPIKey")
     }
 
-    static var hasOpenRouterAPIKey: Bool {
+    nonisolated static var hasOpenRouterAPIKey: Bool {
         exists(key: .openRouterAPIKey)
     }
 }

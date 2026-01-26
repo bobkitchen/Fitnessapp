@@ -300,26 +300,24 @@ final class HealthKitService {
                 anchor: anchor,
                 limit: HKObjectQueryNoLimit
             ) { [weak self] query, samples, deletedObjects, newAnchor, error in
-                if let newAnchor {
-                    self?.anchorsByType[workoutType] = newAnchor
-                }
+                Task { @MainActor [weak self] in
+                    if let newAnchor {
+                        self?.anchorsByType[workoutType] = newAnchor
+                    }
 
-                // Process new workouts
-                if let workouts = samples as? [HKWorkout], !workouts.isEmpty {
-                    Task {
+                    // Process new workouts
+                    if let workouts = samples as? [HKWorkout], !workouts.isEmpty {
                         await self?.processNewWorkouts(workouts)
                     }
-                }
 
-                // Handle deleted workouts
-                if let deleted = deletedObjects, !deleted.isEmpty {
-                    Task {
+                    // Handle deleted workouts
+                    if let deleted = deletedObjects, !deleted.isEmpty {
                         await self?.processDeletedWorkouts(deleted)
                     }
-                }
 
-                self?.lastSyncDate = Date()
-                continuation.resume()
+                    self?.lastSyncDate = Date()
+                    continuation.resume()
+                }
             }
 
             healthStore.execute(query)
@@ -652,7 +650,7 @@ final class HealthKitService {
 
     // MARK: - Helper Methods
 
-    private func unit(for type: HKQuantityType) -> HKUnit {
+    nonisolated private func unit(for type: HKQuantityType) -> HKUnit {
         switch type.identifier {
         case HKQuantityTypeIdentifier.heartRate.rawValue,
              HKQuantityTypeIdentifier.restingHeartRate.rawValue:

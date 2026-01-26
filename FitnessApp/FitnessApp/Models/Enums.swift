@@ -1,7 +1,7 @@
 import Foundation
 
 /// Type of TSS calculation used for a workout
-enum TSSType: String, Codable, CaseIterable {
+nonisolated enum TSSType: String, Codable, CaseIterable, Sendable {
     case power = "Power"           // Cycling power-based TSS
     case runningPower = "rPower"   // Running power-based TSS
     case pace = "Pace"             // Running pace-based rTSS
@@ -43,7 +43,7 @@ enum TSSType: String, Codable, CaseIterable {
 }
 
 /// Source of metric data
-enum MetricSource: String, Codable {
+nonisolated enum MetricSource: String, Codable, Sendable {
     case healthKit = "HealthKit"
     case manual = "Manual"
     case trainingPeaksCalibration = "TrainingPeaks"
@@ -51,7 +51,7 @@ enum MetricSource: String, Codable {
 }
 
 /// Activity type categories
-enum ActivityCategory: String, Codable, CaseIterable {
+nonisolated enum ActivityCategory: String, Codable, CaseIterable, Sendable {
     case run = "Run"
     case bike = "Bike"
     case swim = "Swim"
@@ -70,7 +70,7 @@ enum ActivityCategory: String, Codable, CaseIterable {
 }
 
 /// Training readiness levels based on composite wellness score
-enum TrainingReadiness: String, Codable, CaseIterable {
+nonisolated enum TrainingReadiness: String, Codable, CaseIterable, Sendable {
     case fullyReady = "Fully Ready"
     case mostlyReady = "Mostly Ready"
     case reducedCapacity = "Reduced Capacity"
@@ -114,7 +114,7 @@ enum TrainingReadiness: String, Codable, CaseIterable {
 }
 
 /// Heart rate training zones
-enum HeartRateZone: Int, Codable, CaseIterable {
+nonisolated enum HeartRateZone: Int, Codable, CaseIterable, Sendable {
     case zone1 = 1  // Recovery
     case zone2 = 2  // Endurance
     case zone3 = 3  // Tempo
@@ -155,7 +155,7 @@ enum HeartRateZone: Int, Codable, CaseIterable {
 }
 
 /// Trend direction for metrics
-enum Trend: String, Codable {
+nonisolated enum Trend: String, Codable, Sendable {
     case up = "up"
     case down = "down"
     case stable = "stable"
@@ -170,7 +170,7 @@ enum Trend: String, Codable {
 }
 
 /// Sleep stage types from HealthKit
-enum SleepStage: String, Codable {
+nonisolated enum SleepStage: String, Codable, Sendable {
     case awake = "Awake"
     case rem = "REM"
     case core = "Core"
@@ -180,7 +180,7 @@ enum SleepStage: String, Codable {
 }
 
 /// Date range options for charts
-enum ChartDateRange: String, CaseIterable {
+nonisolated enum ChartDateRange: String, CaseIterable, Sendable {
     case week = "7D"
     case month = "30D"
     case quarter = "90D"

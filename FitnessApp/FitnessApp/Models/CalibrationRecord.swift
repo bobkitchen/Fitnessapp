@@ -118,7 +118,7 @@ final class CalibrationRecord {
 
 // MARK: - Calibration Source
 
-enum CalibrationSource: String, Codable {
+nonisolated enum CalibrationSource: String, Codable, Sendable {
     case screenshot = "Screenshot"          // TrainingPeaks screenshot OCR
     case manual = "Manual"                  // User-entered values
     case api = "API"                        // Future: direct API sync
@@ -166,7 +166,7 @@ extension CalibrationRecord {
 // MARK: - OCR Result
 
 /// Intermediate result from screenshot OCR
-struct OCRCalibrationResult {
+nonisolated struct OCRCalibrationResult: Sendable {
     let effectiveDate: Date?
     let ctl: Double?
     let atl: Double?
@@ -183,7 +183,7 @@ struct OCRCalibrationResult {
     let weeklyTSS: Double?
 
     /// Debug log showing how values were detected and matched
-    var debugLog: String?
+    let debugLog: String?
 
     // MARK: - Validation
 
