@@ -60,7 +60,8 @@ final class WorkoutSyncService {
 
     // MARK: - Main Sync Methods
 
-    /// Perform initial historical sync (12 months)
+    /// Perform initial sync (wellness data only - workouts come from TrainingPeaks CSV import)
+    /// Note: HealthKit workout sync has been removed. Use TPCSVImportService to import workouts.
     func performInitialSync(modelContext: ModelContext, profile: AthleteProfile?) async {
         guard !isSyncing else { return }
         isSyncing = true
@@ -79,41 +80,26 @@ final class WorkoutSyncService {
             let calendar = Calendar.current
             let startDate = calendar.date(byAdding: .month, value: -12, to: Date())!
 
-            // Fetch workouts from HealthKit
-            syncProgress.phase = .fetchingWorkouts
-            let workouts = try await healthKitService.fetchWorkouts(from: startDate)
-            syncProgress.totalWorkouts = workouts.count
-            print("WorkoutSyncService: Found \(workouts.count) workouts to sync")
+            // Skip HealthKit workout fetch - workouts now come from TrainingPeaks CSV import
+            // Count existing workouts (imported from TrainingPeaks)
+            let workoutDescriptor = FetchDescriptor<WorkoutRecord>()
+            let existingWorkouts = (try? modelContext.fetch(workoutDescriptor)) ?? []
+            syncProgress.totalWorkouts = existingWorkouts.count
+            syncProgress.processedWorkouts = existingWorkouts.count
 
-            // Process workouts in batches to avoid timeouts
-            syncProgress.phase = .processingWorkouts
-            let batchSize = 50
-            for batchStart in stride(from: 0, to: workouts.count, by: batchSize) {
-                let batchEnd = min(batchStart + batchSize, workouts.count)
-                let batch = Array(workouts[batchStart..<batchEnd])
-
-                for workout in batch {
-                    let result = await processAndSaveWorkout(workout, modelContext: modelContext, profile: profile)
-                    if result.wasInserted {
-                        syncProgress.processedWorkouts += 1
-                        syncProgress.workoutsByType[result.category, default: 0] += 1
-                        syncProgress.workoutsByTSSType[result.tssType, default: 0] += 1
-                    }
-                }
-
-                // Save batch and yield to prevent UI freezes
-                try modelContext.save()
-                print("WorkoutSyncService: Processed batch \(batchStart/batchSize + 1), total: \(syncProgress.processedWorkouts) workouts")
-
-                // Brief yield to allow UI updates
-                await Task.yield()
+            // Count workouts by type
+            for workout in existingWorkouts {
+                syncProgress.workoutsByType[workout.activityCategory, default: 0] += 1
+                syncProgress.workoutsByTSSType[workout.tssType, default: 0] += 1
             }
 
-            // Update PMC metrics for all days
+            print("WorkoutSyncService: Found \(existingWorkouts.count) existing workouts (from TrainingPeaks import)")
+
+            // Update PMC metrics for all days based on existing workouts
             syncProgress.phase = .calculatingPMC
             await recalculatePMC(modelContext: modelContext, from: startDate)
 
-            // Sync wellness data (last 30 days only for initial sync to save time)
+            // Sync wellness data (last 30 days for initial sync)
             syncProgress.phase = .syncingWellness
             let thirtyDaysAgo = calendar.date(byAdding: .day, value: -30, to: Date())!
             await syncWellnessData(modelContext: modelContext, from: thirtyDaysAgo)
@@ -126,17 +112,17 @@ final class WorkoutSyncService {
             stats.totalSyncs += 1
             stats.lastSyncDate = Date()
             stats.lastSyncWorkoutCount = syncProgress.processedWorkouts
-            stats.totalWorkoutsSynced += syncProgress.processedWorkouts
             syncStatistics = stats
 
-            print("WorkoutSyncService: Sync complete. Processed \(syncProgress.processedWorkouts) workouts")
+            print("WorkoutSyncService: Sync complete. Using \(syncProgress.processedWorkouts) TrainingPeaks workouts")
         } catch {
             print("WorkoutSyncService: Sync failed - \(error)")
             syncError = error
         }
     }
 
-    /// Incremental sync for new workouts
+    /// Incremental sync (wellness data only - recalculate PMC from existing workouts)
+    /// Note: HealthKit workout sync has been removed. Use TPCSVImportService to import new workouts.
     func performIncrementalSync(modelContext: ModelContext, profile: AthleteProfile?) async {
         guard !isSyncing else { return }
         isSyncing = true
@@ -148,36 +134,31 @@ final class WorkoutSyncService {
             // Load TSS scaling profile if available
             loadScalingProfile(from: modelContext)
 
-            // Get the date of the last synced workout
-            let descriptor = FetchDescriptor<WorkoutRecord>(
-                sortBy: [SortDescriptor(\.startDate, order: .reverse)]
+            let calendar = Calendar.current
+
+            // Workouts no longer fetched from HealthKit - they come from TrainingPeaks
+            // Just recalculate PMC from existing workouts and sync wellness data
+
+            // Get earliest workout date for PMC recalculation
+            let workoutDescriptor = FetchDescriptor<WorkoutRecord>(
+                sortBy: [SortDescriptor(\.startDate, order: .forward)]
             )
-            let existingWorkouts = try modelContext.fetch(descriptor)
-            let lastSyncedDate = existingWorkouts.first?.startDate ?? Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            let existingWorkouts = try modelContext.fetch(workoutDescriptor)
 
-            // Fetch new workouts since last sync
-            let newWorkouts = try await healthKitService.fetchWorkouts(from: lastSyncedDate)
-
-            // Filter out already synced workouts
-            let existingUUIDs = Set(existingWorkouts.compactMap { $0.healthKitUUID })
-            let workoutsToSync = newWorkouts.filter { !existingUUIDs.contains($0.uuid) }
-
-            print("WorkoutSyncService: Found \(workoutsToSync.count) new workouts")
-
-            for workout in workoutsToSync {
-                _ = await processAndSaveWorkout(workout, modelContext: modelContext, profile: profile)
-            }
-
-            // Update PMC for affected days
-            if let earliestNew = workoutsToSync.map({ $0.startDate }).min() {
-                await recalculatePMC(modelContext: modelContext, from: earliestNew)
+            if let earliestWorkout = existingWorkouts.first?.startDate {
+                // Recalculate PMC from 7 days ago (covers recent changes)
+                let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: Date())!
+                let recalcStart = min(sevenDaysAgo, earliestWorkout)
+                await recalculatePMC(modelContext: modelContext, from: recalcStart)
             }
 
             // Sync today's wellness data
-            await syncWellnessData(modelContext: modelContext, from: Calendar.current.startOfDay(for: Date()))
+            await syncWellnessData(modelContext: modelContext, from: calendar.startOfDay(for: Date()))
 
             try modelContext.save()
             lastSyncDate = Date()
+
+            print("WorkoutSyncService: Incremental sync complete (wellness data updated)")
         } catch {
             print("WorkoutSyncService: Incremental sync failed - \(error)")
             syncError = error
@@ -411,7 +392,7 @@ final class WorkoutSyncService {
         }
     }
 
-    // MARK: - Wellness Data Sync
+    // MARK: - Wellness Data Sync (with Tier 1 metrics)
 
     private func syncWellnessData(modelContext: ModelContext, from startDate: Date) async {
         let calendar = Calendar.current
@@ -442,6 +423,8 @@ final class WorkoutSyncService {
                 modelContext.insert(metrics)
             }
 
+            // === Core Wellness Metrics ===
+
             // Fetch HRV
             if let hrv = await fetchHRV(for: currentDate) {
                 metrics.hrvRMSSD = hrv
@@ -471,10 +454,109 @@ final class WorkoutSyncService {
                 metrics.activeCalories = calories
             }
 
-            // Calculate readiness score
+            // === Tier 1 Wellness Metrics ===
+
+            // Fetch Heart Rate Recovery (post-workout HR drop)
+            if let hrr = await fetchHeartRateRecovery(for: currentDate) {
+                metrics.heartRateRecovery = hrr
+            }
+
+            // Fetch Lean Body Mass
+            if let lbm = await fetchLeanBodyMass(for: currentDate) {
+                metrics.leanBodyMass = lbm
+            }
+
+            // Fetch VO2 Max and calculate trend
+            if let vo2 = await fetchVO2Max(for: currentDate) {
+                metrics.vo2Max = vo2.value
+                metrics.vo2MaxTrend = vo2.trend
+            }
+
+            // Fetch Cardiac Events (for 7-day window ending on this date)
+            let cardiacEvents = await fetchCardiacEvents(for: currentDate)
+            metrics.irregularHeartRateEvents = cardiacEvents.irregularRhythmCount
+            metrics.highHeartRateEvents = cardiacEvents.highHeartRateCount
+            metrics.lowHeartRateEvents = cardiacEvents.lowHeartRateCount
+
+            // Calculate readiness score (now includes Tier 1 metrics)
             metrics.readinessScore = calculateReadinessScore(metrics: metrics)
 
             currentDate = nextDate
+        }
+    }
+
+    // MARK: - Tier 1 Wellness Fetch Methods
+
+    private func fetchHeartRateRecovery(for date: Date) async -> Int? {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        do {
+            let samples = try await healthKitService.fetchHeartRateRecovery(from: startOfDay, to: endOfDay)
+            guard !samples.isEmpty else { return nil }
+
+            // Return the most recent HRR value for the day
+            let unit = HKUnit.count().unitDivided(by: .minute())
+            let value = samples.last?.quantity.doubleValue(for: unit) ?? 0
+            return Int(value)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchLeanBodyMass(for date: Date) async -> Double? {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        do {
+            let samples = try await healthKitService.fetchLeanBodyMass(from: startOfDay, to: endOfDay)
+            guard !samples.isEmpty else { return nil }
+
+            // Return the most recent lean body mass value
+            let value = samples.last?.quantity.doubleValue(for: .gramUnit(with: .kilo)) ?? 0
+            return value
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchVO2Max(for date: Date) async -> (value: Double, trend: Trend)? {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+
+        // Fetch 90 days of VO2 Max data for trend calculation
+        let ninetyDaysAgo = calendar.date(byAdding: .day, value: -90, to: startOfDay)!
+
+        do {
+            let samples = try await healthKitService.fetchVO2Max(from: ninetyDaysAgo, to: startOfDay)
+            guard !samples.isEmpty else { return nil }
+
+            // Get the most recent value
+            let unit = HKUnit.literUnit(with: .milli).unitDivided(by: .gramUnit(with: .kilo).unitMultiplied(by: .minute()))
+            let latestValue = samples.last?.quantity.doubleValue(for: unit) ?? 0
+
+            // Calculate trend
+            let trend = healthKitService.calculateVO2MaxTrend(samples: samples)
+
+            return (latestValue, trend)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchCardiacEvents(for date: Date) async -> HeartRateEvents {
+        let calendar = Calendar.current
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
+
+        // Fetch cardiac events for the 7-day window ending on this date
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: endOfDay)!
+
+        do {
+            return try await healthKitService.fetchHeartRateEvents(from: sevenDaysAgo, to: endOfDay)
+        } catch {
+            return HeartRateEvents()
         }
     }
 
@@ -541,17 +623,17 @@ final class WorkoutSyncService {
         var score = 70.0 // Base score
         var factors = 0
 
-        // HRV factor (weight: 30%)
+        // HRV factor (weight: 25%)
         if let hrv = metrics.hrvRMSSD {
             // Assume 40-60ms is normal range
             let hrvScore = min(100, max(0, (hrv - 20) * 2))
-            score += hrvScore * 0.3
+            score += hrvScore * 0.25
             factors += 1
         }
 
-        // Sleep factor (weight: 25%)
+        // Sleep factor (weight: 20%)
         if let sleepQuality = metrics.sleepQuality {
-            score += sleepQuality * 100 * 0.25
+            score += sleepQuality * 100 * 0.20
             factors += 1
         }
 
@@ -567,6 +649,38 @@ final class WorkoutSyncService {
         let tsbScore = min(100, max(0, 50 + metrics.tsb * 2))
         score += tsbScore * 0.15
         factors += 1
+
+        // Heart Rate Recovery factor (weight: 15%) - Tier 1
+        // >50 bpm drop = excellent fitness, <30 bpm = fatigue indicator
+        if let hrr = metrics.heartRateRecovery {
+            let hrrScore: Double
+            switch hrr {
+            case 50...: hrrScore = 100  // Excellent
+            case 40..<50: hrrScore = 80  // Good
+            case 30..<40: hrrScore = 60  // Fair
+            default: hrrScore = 40       // Poor - fatigue indicator
+            }
+            score += hrrScore * 0.15
+            factors += 1
+        }
+
+        // Cardiac events factor (weight: 10%) - Tier 1
+        // Any irregular rhythm events are a concern
+        if metrics.totalCardiacEvents > 0 {
+            let eventScore: Double
+            if (metrics.irregularHeartRateEvents ?? 0) > 0 {
+                eventScore = 30  // Irregular rhythm is concerning
+            } else if metrics.totalCardiacEvents > 5 {
+                eventScore = 50  // Elevated activity
+            } else {
+                eventScore = 70  // Minor activity
+            }
+            score += eventScore * 0.10
+            factors += 1
+        } else {
+            score += 100 * 0.10  // No events is good
+            factors += 1
+        }
 
         return factors > 0 ? min(100, max(0, score)) : 70
     }

@@ -360,12 +360,11 @@ struct ProfileEditView: View {
             var updatedFields: [String] = []
 
             // Update birth date if available and not already set
-            if let age = healthData.age, profile.birthDate == nil {
-                // Calculate birth date from age
-                let calendar = Calendar.current
-                if let birthDate = calendar.date(byAdding: .year, value: -age, to: Date()) {
-                    profile.birthDate = birthDate
-                    updatedFields.append("age")
+            // Use fetchDateOfBirth() directly to get exact date, not reconstructed from age
+            if profile.birthDate == nil {
+                if let dateOfBirth = try? healthKitService.fetchDateOfBirth() {
+                    profile.birthDate = dateOfBirth
+                    updatedFields.append("birth date")
                 }
             }
 

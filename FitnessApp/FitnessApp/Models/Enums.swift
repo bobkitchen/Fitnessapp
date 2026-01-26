@@ -8,6 +8,7 @@ nonisolated enum TSSType: String, Codable, CaseIterable, Sendable {
     case heartRate = "HR"          // Heart rate-based hrTSS
     case swim = "Swim"             // Swimming TSS
     case estimated = "Est"         // Estimated/default TSS
+    case trainingPeaks = "TP"      // Pre-calculated by TrainingPeaks
 
     var description: String {
         switch self {
@@ -17,6 +18,7 @@ nonisolated enum TSSType: String, Codable, CaseIterable, Sendable {
         case .heartRate: return "Heart rate fallback"
         case .swim: return "Swim pace calculation"
         case .estimated: return "Duration estimate only"
+        case .trainingPeaks: return "Pre-calculated by TrainingPeaks"
         }
     }
 
@@ -28,12 +30,14 @@ nonisolated enum TSSType: String, Codable, CaseIterable, Sendable {
         case .heartRate: return "HR TSS"
         case .swim: return "Swim TSS"
         case .estimated: return "Estimated"
+        case .trainingPeaks: return "TrainingPeaks"
         }
     }
 
     /// Quality indicator - power is most accurate, estimated is least
     var qualityRank: Int {
         switch self {
+        case .trainingPeaks: return 4  // Highest - pre-calculated with full data
         case .power, .runningPower: return 3
         case .pace, .swim: return 2
         case .heartRate: return 1
@@ -48,6 +52,29 @@ nonisolated enum MetricSource: String, Codable, Sendable {
     case manual = "Manual"
     case trainingPeaksCalibration = "TrainingPeaks"
     case calculated = "Calculated"
+}
+
+/// Source of workout data
+nonisolated enum WorkoutSource: String, Codable, Sendable {
+    case healthKit = "HealthKit"       // Synced from Apple Health
+    case trainingPeaks = "TrainingPeaks" // Imported from TrainingPeaks CSV
+    case manual = "Manual"             // Manually entered
+
+    var displayName: String {
+        switch self {
+        case .healthKit: return "Apple Health"
+        case .trainingPeaks: return "TrainingPeaks"
+        case .manual: return "Manual Entry"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .healthKit: return "heart.fill"
+        case .trainingPeaks: return "chart.line.uptrend.xyaxis"
+        case .manual: return "pencil"
+        }
+    }
 }
 
 /// Activity type categories
@@ -165,6 +192,14 @@ nonisolated enum Trend: String, Codable, Sendable {
         case .up: return "arrow.up.right"
         case .down: return "arrow.down.right"
         case .stable: return "arrow.right"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .up: return "Improving"
+        case .down: return "Declining"
+        case .stable: return "Stable"
         }
     }
 }

@@ -78,6 +78,19 @@ final class WorkoutRecord {
     var notes: String?
     var indoorWorkout: Bool
 
+    // MARK: - TrainingPeaks-specific Fields
+    var powerZoneDistribution: [String: Double]?  // PWRZone1-10 minutes in each zone
+    var rpe: Int?                                  // Rate of Perceived Exertion (1-10 scale)
+    var feeling: Int?                              // How athlete felt (1-10 scale)
+    var coachComments: String?                     // Coach's notes/comments
+    var sourceRaw: String?                         // WorkoutSource raw value
+
+    /// Source of the workout data
+    var source: WorkoutSource {
+        get { WorkoutSource(rawValue: sourceRaw ?? "") ?? .healthKit }
+        set { sourceRaw = newValue.rawValue }
+    }
+
     // MARK: - GPS Route
     var hasRoute: Bool
     var routeFileURL: String?               // Path to stored GPX/route data

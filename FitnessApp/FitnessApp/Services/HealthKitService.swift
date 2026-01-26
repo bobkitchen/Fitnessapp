@@ -60,7 +60,7 @@ final class HealthKitService {
         return types
     }
 
-    /// Recovery and wellness data types
+    /// Recovery and wellness data types (Tier 1 enriched)
     private var wellnessReadTypes: Set<HKSampleType> {
         var types: Set<HKSampleType> = []
 
@@ -69,14 +69,17 @@ final class HealthKitService {
             types.insert(sleepType)
         }
 
-        // Recovery metrics
+        // Recovery metrics (including new Tier 1 types)
         let quantityTypes: [HKQuantityTypeIdentifier] = [
             .heartRateVariabilitySDNN,
             .restingHeartRate,
             .respiratoryRate,
             .oxygenSaturation,
             .bodyTemperature,
-            .vo2Max
+            .vo2Max,
+            // Tier 1 additions
+            .heartRateRecoveryOneMinute,  // Post-workout HR recovery
+            .leanBodyMass                  // Body composition
         ]
 
         for identifier in quantityTypes {
@@ -85,9 +88,19 @@ final class HealthKitService {
             }
         }
 
-        // Mindfulness
-        if let mindfulType = HKCategoryType.categoryType(forIdentifier: .mindfulSession) {
-            types.insert(mindfulType)
+        // Category types (including new Tier 1 types)
+        let categoryTypes: [HKCategoryTypeIdentifier] = [
+            .mindfulSession,
+            // Tier 1 cardiac event types
+            .irregularHeartRhythmEvent,
+            .highHeartRateEvent,
+            .lowHeartRateEvent
+        ]
+
+        for identifier in categoryTypes {
+            if let type = HKCategoryType.categoryType(forIdentifier: identifier) {
+                types.insert(type)
+            }
         }
 
         return types
@@ -483,6 +496,122 @@ final class HealthKitService {
         return try await fetchQuantitySamples(type: vo2Type, predicate: predicate)
     }
 
+    // MARK: - Tier 1 Wellness Metrics
+
+    /// Fetch heart rate recovery (1-minute post-workout drop) samples
+    func fetchHeartRateRecovery(from startDate: Date, to endDate: Date = Date()) async throws -> [HKQuantitySample] {
+        guard let hrrType = HKQuantityType.quantityType(forIdentifier: .heartRateRecoveryOneMinute) else {
+            throw HealthKitError.typeNotAvailable
+        }
+
+        let predicate = HKQuery.predicateForSamples(
+            withStart: startDate,
+            end: endDate,
+            options: .strictStartDate
+        )
+
+        return try await fetchQuantitySamples(type: hrrType, predicate: predicate)
+    }
+
+    /// Fetch lean body mass measurements
+    func fetchLeanBodyMass(from startDate: Date, to endDate: Date = Date()) async throws -> [HKQuantitySample] {
+        guard let lbmType = HKQuantityType.quantityType(forIdentifier: .leanBodyMass) else {
+            throw HealthKitError.typeNotAvailable
+        }
+
+        let predicate = HKQuery.predicateForSamples(
+            withStart: startDate,
+            end: endDate,
+            options: .strictStartDate
+        )
+
+        return try await fetchQuantitySamples(type: lbmType, predicate: predicate)
+    }
+
+    /// Fetch cardiac events (irregular rhythm, high HR, low HR)
+    func fetchHeartRateEvents(from startDate: Date, to endDate: Date = Date()) async throws -> HeartRateEvents {
+        var events = HeartRateEvents()
+
+        // Fetch irregular rhythm events
+        if let irregularType = HKCategoryType.categoryType(forIdentifier: .irregularHeartRhythmEvent) {
+            let samples = try await fetchCategorySamples(type: irregularType, from: startDate, to: endDate)
+            events.irregularRhythmCount = samples.count
+        }
+
+        // Fetch high heart rate events
+        if let highHRType = HKCategoryType.categoryType(forIdentifier: .highHeartRateEvent) {
+            let samples = try await fetchCategorySamples(type: highHRType, from: startDate, to: endDate)
+            events.highHeartRateCount = samples.count
+        }
+
+        // Fetch low heart rate events
+        if let lowHRType = HKCategoryType.categoryType(forIdentifier: .lowHeartRateEvent) {
+            let samples = try await fetchCategorySamples(type: lowHRType, from: startDate, to: endDate)
+            events.lowHeartRateCount = samples.count
+        }
+
+        return events
+    }
+
+    /// Fetch category samples for cardiac events
+    private func fetchCategorySamples(type: HKCategoryType, from startDate: Date, to endDate: Date) async throws -> [HKCategorySample] {
+        let predicate = HKQuery.predicateForSamples(
+            withStart: startDate,
+            end: endDate,
+            options: .strictStartDate
+        )
+
+        let sortDescriptor = NSSortDescriptor(
+            key: HKSampleSortIdentifierStartDate,
+            ascending: true
+        )
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: type,
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: [sortDescriptor]
+            ) { _, samples, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                let categorySamples = samples as? [HKCategorySample] ?? []
+                continuation.resume(returning: categorySamples)
+            }
+
+            healthStore.execute(query)
+        }
+    }
+
+    /// Calculate VO2 Max trend over recent samples
+    func calculateVO2MaxTrend(samples: [HKQuantitySample]) -> Trend {
+        guard samples.count >= 2 else { return .stable }
+
+        let sortedSamples = samples.sorted { $0.startDate < $1.startDate }
+        let unit = HKUnit.literUnit(with: .milli).unitDivided(by: .gramUnit(with: .kilo).unitMultiplied(by: .minute()))
+
+        // Compare first half average to second half average
+        let midpoint = sortedSamples.count / 2
+        let firstHalf = sortedSamples.prefix(midpoint).map { $0.quantity.doubleValue(for: unit) }
+        let secondHalf = sortedSamples.suffix(sortedSamples.count - midpoint).map { $0.quantity.doubleValue(for: unit) }
+
+        let firstAvg = firstHalf.reduce(0, +) / Double(firstHalf.count)
+        let secondAvg = secondHalf.reduce(0, +) / Double(secondHalf.count)
+
+        let percentChange = (secondAvg - firstAvg) / firstAvg * 100
+
+        if percentChange > 2 {
+            return .up
+        } else if percentChange < -2 {
+            return .down
+        } else {
+            return .stable
+        }
+    }
+
     // MARK: - Activity Metrics
 
     /// Fetch step count for a date
@@ -653,7 +782,8 @@ final class HealthKitService {
     nonisolated private func unit(for type: HKQuantityType) -> HKUnit {
         switch type.identifier {
         case HKQuantityTypeIdentifier.heartRate.rawValue,
-             HKQuantityTypeIdentifier.restingHeartRate.rawValue:
+             HKQuantityTypeIdentifier.restingHeartRate.rawValue,
+             HKQuantityTypeIdentifier.heartRateRecoveryOneMinute.rawValue:
             return HKUnit.count().unitDivided(by: .minute())
 
         case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue,
@@ -679,7 +809,8 @@ final class HealthKitService {
         case HKQuantityTypeIdentifier.vo2Max.rawValue:
             return HKUnit.literUnit(with: .milli).unitDivided(by: .gramUnit(with: .kilo).unitMultiplied(by: .minute()))
 
-        case HKQuantityTypeIdentifier.bodyMass.rawValue:
+        case HKQuantityTypeIdentifier.bodyMass.rawValue,
+             HKQuantityTypeIdentifier.leanBodyMass.rawValue:
             return .gramUnit(with: .kilo)
 
         case HKQuantityTypeIdentifier.bodyFatPercentage.rawValue:
@@ -866,5 +997,32 @@ struct HealthProfileData {
         case .other: return "Other"
         default: return nil
         }
+    }
+}
+
+/// Cardiac events from HealthKit
+struct HeartRateEvents {
+    var irregularRhythmCount: Int = 0
+    var highHeartRateCount: Int = 0
+    var lowHeartRateCount: Int = 0
+
+    var totalCount: Int {
+        irregularRhythmCount + highHeartRateCount + lowHeartRateCount
+    }
+
+    var hasAnyEvents: Bool {
+        totalCount > 0
+    }
+
+    /// Status based on event counts
+    var status: String {
+        if irregularRhythmCount > 0 {
+            return "Review Recommended"
+        } else if highHeartRateCount > 5 || lowHeartRateCount > 5 {
+            return "Elevated Activity"
+        } else if totalCount > 0 {
+            return "Minor Activity"
+        }
+        return "Normal"
     }
 }
