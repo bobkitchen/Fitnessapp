@@ -1,89 +1,148 @@
 import SwiftUI
 
-/// The centerpiece hero component showing training readiness as an animated ring
+/// The centerpiece hero component showing training readiness with letter grades
+/// Shows overall grade and breakdown of all 5 components (HRV, Sleep, RHR, Recovery, Form)
 struct HeroReadinessRing: View {
     let score: Double
     let readiness: TrainingReadiness
-    let hrvScore: Double?
-    let sleepScore: Double?
+    let components: ReadinessComponents
     let onTap: (() -> Void)?
+    let onInfoTap: (() -> Void)?
 
     @State private var animatedProgress: Double = 0
     @State private var isAppeared = false
 
+    // Convenience initializer for backwards compatibility
     init(
         score: Double,
         readiness: TrainingReadiness,
         hrvScore: Double? = nil,
         sleepScore: Double? = nil,
-        onTap: (() -> Void)? = nil
+        rhrScore: Double? = nil,
+        recoveryScore: Double? = nil,
+        tsbScore: Double? = nil,
+        onTap: (() -> Void)? = nil,
+        onInfoTap: (() -> Void)? = nil
     ) {
         self.score = score
         self.readiness = readiness
-        self.hrvScore = hrvScore
-        self.sleepScore = sleepScore
+        self.components = ReadinessComponents(
+            hrvScore: hrvScore,
+            sleepScore: sleepScore,
+            rhrScore: rhrScore,
+            recoveryScore: recoveryScore,
+            stressScore: nil,
+            tsbScore: tsbScore
+        )
         self.onTap = onTap
+        self.onInfoTap = onInfoTap
+    }
+
+    // Full initializer with ReadinessComponents
+    init(
+        score: Double,
+        readiness: TrainingReadiness,
+        components: ReadinessComponents,
+        onTap: (() -> Void)? = nil,
+        onInfoTap: (() -> Void)? = nil
+    ) {
+        self.score = score
+        self.readiness = readiness
+        self.components = components
+        self.onTap = onTap
+        self.onInfoTap = onInfoTap
+    }
+
+    private var overallGrade: LetterGrade {
+        LetterGrade.from(score: score)
     }
 
     var body: some View {
-        VStack(spacing: Spacing.lg) {
-            // Main ring
+        VStack(spacing: Spacing.md) {
+            // Header with title and info button
+            HStack {
+                Text("READINESS")
+                    .font(AppFont.labelSmall)
+                    .foregroundStyle(Color.textTertiary)
+                    .tracking(0.5)
+
+                Spacer()
+
+                if onInfoTap != nil {
+                    Button {
+                        onInfoTap?()
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: IconSize.medium))
+                            .foregroundStyle(Color.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // Main ring with letter grade
             ZStack {
-                // Background ring
+                // Background ring - subtle
                 Circle()
                     .stroke(
                         Color.backgroundTertiary,
-                        style: StrokeStyle(lineWidth: 16, lineCap: .round)
+                        style: StrokeStyle(lineWidth: Layout.heroRingStroke, lineCap: .round)
                     )
 
                 // Animated progress ring
                 Circle()
                     .trim(from: 0, to: animatedProgress / 100)
                     .stroke(
-                        ringGradient,
-                        style: StrokeStyle(lineWidth: 16, lineCap: .round)
+                        overallGrade.color,
+                        style: StrokeStyle(lineWidth: Layout.heroRingStroke, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: ringColor.opacity(0.4), radius: 8, x: 0, y: 4)
 
-                // Center content
-                VStack(spacing: Spacing.xxs) {
-                    Text("\(Int(score))")
-                        .font(AppFont.metricHero)
-                        .foregroundStyle(Color.textPrimary)
+                // Center content - letter grade
+                VStack(spacing: Spacing.xxxs) {
+                    Text(overallGrade.grade)
+                        .font(.system(size: 56, weight: .bold, design: .rounded))
+                        .foregroundStyle(overallGrade.color)
                         .contentTransition(.numericText())
 
+                    Text("(\(Int(score)) / 100)")
+                        .font(AppFont.captionLarge)
+                        .foregroundStyle(Color.textTertiary)
+
                     Text(readiness.rawValue.uppercased())
-                        .font(AppFont.labelSmall)
-                        .foregroundStyle(ringColor)
-                        .tracking(1)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(overallGrade.color)
+                        .tracking(0.5)
                 }
             }
             .frame(width: Layout.heroRingSize, height: Layout.heroRingSize)
-            .pulsingGlow(color: ringColor, radius: score >= 80 ? 12 : 0)
 
-            // Component breakdown
-            HStack(spacing: Spacing.xl) {
-                if let hrv = hrvScore {
-                    ComponentIndicator(
-                        label: "HRV",
-                        score: hrv,
-                        color: colorForScore(hrv)
-                    )
+            // Component breakdown with letter grades
+            VStack(spacing: Spacing.xs) {
+                if let hrv = components.hrvScore {
+                    ComponentGradeRow(label: "HRV", score: hrv)
                 }
 
-                if let sleep = sleepScore {
-                    ComponentIndicator(
-                        label: "Sleep",
-                        score: sleep,
-                        color: colorForScore(sleep)
-                    )
+                if let sleep = components.sleepScore {
+                    ComponentGradeRow(label: "Sleep", score: sleep)
+                }
+
+                if let rhr = components.rhrScore {
+                    ComponentGradeRow(label: "RHR", score: rhr)
+                }
+
+                if let recovery = components.recoveryScore {
+                    ComponentGradeRow(label: "Recovery", score: recovery)
+                }
+
+                if let tsb = components.tsbScore {
+                    ComponentGradeRow(label: "Form", score: tsb)
                 }
             }
             .animatedAppearance(index: 1)
         }
-        .padding(Spacing.lg)
-        .cardBackground(cornerRadius: CornerRadius.extraLarge)
+        .padding(Spacing.md)
+        .cardBackground(cornerRadius: CornerRadius.large)
         .onTapGesture {
             onTap?()
         }
@@ -94,118 +153,131 @@ struct HeroReadinessRing: View {
             isAppeared = true
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Training readiness: \(Int(score)) percent, \(readiness.rawValue)")
+        .accessibilityLabel("Training readiness: \(overallGrade.grade), \(Int(score)) percent, \(readiness.rawValue)")
         .accessibilityHint("Tap for details")
     }
+}
 
-    // MARK: - Computed Properties
+// MARK: - Component Grade Row
 
-    private var ringColor: Color {
-        readiness.themeColor
+/// Horizontal bar showing metric with label, progress bar, and letter grade
+private struct ComponentGradeRow: View {
+    let label: String
+    let score: Double
+
+    private var grade: LetterGrade {
+        LetterGrade.from(score: score)
     }
 
-    private var ringGradient: AngularGradient {
-        AngularGradient(
-            gradient: Gradient(colors: gradientColors),
-            center: .center,
-            startAngle: .degrees(-90),
-            endAngle: .degrees(270)
-        )
-    }
+    var body: some View {
+        HStack(spacing: Spacing.sm) {
+            // Label
+            Text(label)
+                .font(AppFont.captionLarge)
+                .foregroundStyle(Color.textTertiary)
+                .frame(width: 60, alignment: .leading)
 
-    private var gradientColors: [Color] {
-        switch readiness {
-        case .fullyReady:
-            return [Color.statusExcellent, Color.statusGood]
-        case .mostlyReady:
-            return [Color.statusGood, Color.chartFitness]
-        case .reducedCapacity:
-            return [Color.statusModerate, Color(hex: "FF8F00")]
-        case .restRecommended:
-            return [Color.statusLow, Color(hex: "D32F2F")]
-        }
-    }
+            // Progress bar
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.backgroundTertiary)
 
-    private func colorForScore(_ score: Double) -> Color {
-        switch score {
-        case 80...: return .statusExcellent
-        case 60..<80: return .statusGood
-        case 40..<60: return .statusModerate
-        default: return .statusLow
+                    Capsule()
+                        .fill(grade.color)
+                        .frame(width: geometry.size.width * min(score / 100, 1))
+                }
+            }
+            .frame(height: 6)
+
+            // Letter grade (bold, colored)
+            Text(grade.grade)
+                .font(AppFont.labelMedium)
+                .fontWeight(.semibold)
+                .foregroundStyle(grade.color)
+                .frame(width: 28, alignment: .trailing)
         }
     }
 }
 
-// MARK: - Component Indicator
+// MARK: - Legacy Support
 
-private struct ComponentIndicator: View {
+/// Inline metric bar kept for compatibility - now uses letter grades internally
+private struct InlineMetricBar: View {
     let label: String
     let score: Double
     let color: Color
 
     var body: some View {
-        VStack(spacing: Spacing.xxs) {
-            // Mini progress bar
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.backgroundTertiary)
-
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(color)
-                        .frame(width: geometry.size.width * (score / 100))
-                }
-            }
-            .frame(width: 60, height: 4)
-
-            HStack(spacing: Spacing.xxs) {
-                Text(label)
-                    .font(AppFont.captionSmall)
-                    .foregroundStyle(Color.textTertiary)
-
-                Text("\(Int(score))")
-                    .font(AppFont.labelMedium)
-                    .foregroundStyle(Color.textSecondary)
-                    .monospacedDigit()
-            }
-        }
+        ComponentGradeRow(label: label, score: score)
     }
 }
 
 // MARK: - Preview
 
-#Preview {
+#Preview("All States") {
     ScrollView {
-        VStack(spacing: Spacing.lg) {
+        VStack(spacing: Spacing.md) {
             HeroReadinessRing(
-                score: 85,
+                score: 92,
                 readiness: .fullyReady,
-                hrvScore: 82,
-                sleepScore: 88
+                hrvScore: 95,
+                sleepScore: 91,
+                rhrScore: 88,
+                recoveryScore: 100,
+                tsbScore: 85,
+                onInfoTap: {}
             )
 
             HeroReadinessRing(
-                score: 68,
+                score: 77,
                 readiness: .mostlyReady,
-                hrvScore: 65,
-                sleepScore: 72
+                hrvScore: 82,
+                sleepScore: 90,
+                rhrScore: 75,
+                recoveryScore: 70,
+                tsbScore: 68,
+                onInfoTap: {}
             )
 
             HeroReadinessRing(
-                score: 45,
+                score: 55,
                 readiness: .reducedCapacity,
-                hrvScore: 40,
-                sleepScore: 52
+                hrvScore: 55,
+                sleepScore: 62,
+                rhrScore: 50,
+                recoveryScore: 60,
+                tsbScore: 48,
+                onInfoTap: {}
             )
 
             HeroReadinessRing(
-                score: 28,
+                score: 35,
                 readiness: .restRecommended,
-                hrvScore: 25,
-                sleepScore: 30
+                hrvScore: 30,
+                sleepScore: 45,
+                rhrScore: 35,
+                recoveryScore: 40,
+                tsbScore: 25,
+                onInfoTap: {}
             )
         }
         .padding()
     }
+    .background(Color.backgroundPrimary)
+}
+
+#Preview("Mostly Ready - C+") {
+    HeroReadinessRing(
+        score: 77,
+        readiness: .mostlyReady,
+        hrvScore: 87,
+        sleepScore: 91,
+        rhrScore: 85,
+        recoveryScore: 78,
+        tsbScore: 84,
+        onInfoTap: {}
+    )
+    .padding()
     .background(Color.backgroundPrimary)
 }

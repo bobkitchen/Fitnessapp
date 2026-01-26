@@ -188,7 +188,8 @@ struct ReadinessBadge: View {
                         sleepScore: 75,
                         rhrScore: 70,
                         recoveryScore: 85,
-                        stressScore: 65
+                        stressScore: 65,
+                        tsbScore: 70
                     ),
                     insights: [
                         "HRV is slightly above baseline",
@@ -206,7 +207,8 @@ struct ReadinessBadge: View {
                         sleepScore: 55,
                         rhrScore: 45,
                         recoveryScore: 40,
-                        stressScore: 50
+                        stressScore: 50,
+                        tsbScore: 45
                     ),
                     insights: [
                         "HRV is 20% below baseline - recovery needed",

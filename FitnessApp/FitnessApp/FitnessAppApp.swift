@@ -96,15 +96,11 @@ struct MainTabView: View {
                     PerformanceView()
                 }
 
-                Tab("Workouts", systemImage: "figure.run", value: 2) {
-                    WorkoutsView()
-                }
-
-                Tab("Coach", systemImage: "bubble.left", value: 3) {
+                Tab("Coach", systemImage: "bubble.left", value: 2) {
                     CoachView()
                 }
 
-                Tab("Settings", systemImage: "gear", value: 4) {
+                Tab("Settings", systemImage: "gear", value: 3) {
                     SettingsView()
                 }
             }

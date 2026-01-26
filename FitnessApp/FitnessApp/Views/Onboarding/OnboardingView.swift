@@ -336,7 +336,7 @@ struct SyncProgressPage: View {
             .font(AppFont.displaySmall)
             .foregroundStyle(Color.textPrimary)
 
-        Text("We'll import 6 months of workouts from Apple Health and automatically detect your training thresholds.")
+        Text("We'll import 12 months of workouts from Apple Health and automatically detect your training thresholds.")
             .font(AppFont.bodyMedium)
             .foregroundStyle(Color.textSecondary)
             .multilineTextAlignment(.center)

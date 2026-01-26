@@ -325,6 +325,17 @@ struct WellnessAnalyzer {
             insights.append("High fatigue accumulated - recovery recommended")
         }
 
+        // Calculate TSB score for components display
+        let tsbScore: Double? = tsb.map { tsbValue in
+            switch tsbValue {
+            case 15...: return 100.0
+            case 5..<15: return 85.0
+            case -10..<5: return 70.0
+            case -25..<(-10): return 50.0
+            default: return 30.0
+            }
+        }
+
         return ReadinessResult(
             score: finalScore,
             readiness: readiness,
@@ -340,7 +351,8 @@ struct WellnessAnalyzer {
                     default: return 100.0
                     }
                 },
-                stressScore: stressScore
+                stressScore: stressScore,
+                tsbScore: tsbScore
             ),
             insights: insights
         )
@@ -441,4 +453,5 @@ struct ReadinessComponents {
     let rhrScore: Double?
     let recoveryScore: Double?
     let stressScore: Double?
+    let tsbScore: Double?  // Form/TSB score
 }

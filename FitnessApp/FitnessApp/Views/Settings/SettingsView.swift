@@ -545,7 +545,7 @@ struct HealthKitSettingsView: View {
                 Task { await performFullResync() }
             }
         } message: {
-            Text("This will clear all workout data and re-import 6 months of history from Apple Health. This may take a few minutes.")
+            Text("This will clear all workout data and re-import 12 months of history from Apple Health. This may take a few minutes.")
         }
     }
 

@@ -25,6 +25,12 @@ enum AppFont {
 
     // MARK: - Metric Fonts (Tabular for alignment)
 
+    /// Super hero metric - 64pt bold rounded (for readiness score)
+    static var metricSuperHero: Font {
+        Font.system(size: 64, weight: .bold, design: .rounded)
+            .monospacedDigit()
+    }
+
     /// Hero metric - 48pt bold rounded with monospaced digits
     static var metricHero: Font {
         Font.system(size: 48, weight: .bold, design: .rounded)
@@ -37,9 +43,9 @@ enum AppFont {
             .monospacedDigit()
     }
 
-    /// Medium metric - 24pt semibold rounded with monospaced digits
+    /// Medium metric - 28pt semibold rounded (increased from 24pt)
     static var metricMedium: Font {
-        Font.system(size: 24, weight: .semibold, design: .rounded)
+        Font.system(size: 28, weight: .semibold, design: .rounded)
             .monospacedDigit()
     }
 

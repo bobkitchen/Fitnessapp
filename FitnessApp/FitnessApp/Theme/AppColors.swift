@@ -2,91 +2,105 @@ import SwiftUI
 
 // MARK: - App Color Palette
 
-/// Dark mode optimized color palette inspired by Athlytic and The Outsiders
+/// "Refined Dark Athletic" color palette
+/// Inspired by Whoop 4.0, Oura Ring, Garmin MARQ, luxury sports watches
 extension Color {
-    // MARK: - Backgrounds (Layered Depth)
+    // MARK: - Backgrounds (Warmer Blacks with Layered Depth)
 
-    /// Near black primary background
-    static let backgroundPrimary = Color(hex: "0D0D0F")
+    /// Deeper, slightly warm black primary background
+    static let backgroundPrimary = Color(hex: "0A0A0C")
 
     /// Card surface background
-    static let backgroundSecondary = Color(hex: "1A1A1E")
+    static let backgroundSecondary = Color(hex: "141418")
 
-    /// Elevated cards background
-    static let backgroundTertiary = Color(hex: "252529")
+    /// Elevated elements background
+    static let backgroundTertiary = Color(hex: "1E1E24")
 
-    // MARK: - Accent Colors
+    // MARK: - Signature Accent (Warm Amber/Gold - Premium Feel)
 
-    /// Teal/mint - readiness indicator
-    static let accentPrimary = Color(hex: "00D4AA")
+    /// Amber gold - THE brand color for positive/ready states
+    static let accentPrimary = Color(hex: "F5A623")
 
-    /// Purple - AI coach accent
-    static let accentSecondary = Color(hex: "7B61FF")
+    /// Light gold for highlights
+    static let accentSecondary = Color(hex: "FFD54F")
 
-    // MARK: - Status Colors
+    // MARK: - Status Colors (Simplified to 3 Clear States)
 
-    /// Bright green for excellent status
-    static let statusExcellent = Color(hex: "00E676")
+    /// Soft green for optimal/excellent status (not neon)
+    static let statusOptimal = Color(hex: "4ADE80")
 
-    /// Teal for good status
-    static let statusGood = Color(hex: "00D4AA")
+    /// Amber for moderate status (matches accent)
+    static let statusModerate = Color(hex: "F5A623")
 
-    /// Amber for moderate status
-    static let statusModerate = Color(hex: "FFB300")
+    /// Soft coral red for low/warning status
+    static let statusLow = Color(hex: "F87171")
 
-    /// Red for low/warning status
-    static let statusLow = Color(hex: "FF5252")
+    // Legacy aliases for backwards compatibility
+    static var statusExcellent: Color { statusOptimal }
+    static var statusGood: Color { statusOptimal }
 
-    // MARK: - Activity Colors
+    // MARK: - Data/Metric Colors (Cool Blues for Visualization)
 
-    /// Deep orange for running
-    static let activityRun = Color(hex: "FF7043")
+    /// Soft blue for Fitness (CTL)
+    static let metricPrimary = Color(hex: "60A5FA")
 
-    /// Blue for cycling
-    static let activityBike = Color(hex: "42A5F5")
+    /// Soft purple for Fatigue (ATL)
+    static let metricSecondary = Color(hex: "818CF8")
 
-    /// Cyan for swimming
-    static let activitySwim = Color(hex: "26C6DA")
+    /// Soft teal for Form (TSB)
+    static let metricTertiary = Color(hex: "34D399")
 
-    /// Purple for strength training
-    static let activityStrength = Color(hex: "AB47BC")
+    // MARK: - Activity Colors (Subtle, Not Saturated)
+
+    /// Soft orange for running
+    static let activityRun = Color(hex: "FB923C")
+
+    /// Soft blue for cycling
+    static let activityBike = Color(hex: "60A5FA")
+
+    /// Soft cyan for swimming
+    static let activitySwim = Color(hex: "22D3EE")
+
+    /// Soft purple for strength training
+    static let activityStrength = Color(hex: "A78BFA")
 
     // MARK: - PMC Chart Colors
 
-    /// Fitness (CTL) line color
-    static let chartFitness = Color(hex: "42A5F5")
+    /// Fitness (CTL) line color - soft blue
+    static let chartFitness = Color(hex: "60A5FA")
 
-    /// Fatigue (ATL) line color
-    static let chartFatigue = Color(hex: "EC407A")
+    /// Fatigue (ATL) line color - warm coral (contrast with blue fitness line)
+    static let chartFatigue = Color(hex: "FB7185")
 
-    /// Fresh form (positive TSB)
-    static let chartFormFresh = Color(hex: "00E676")
+    /// Fresh form (positive TSB) - soft green
+    static let chartFormFresh = Color(hex: "34D399")
 
-    /// Tired form (negative TSB)
-    static let chartFormTired = Color(hex: "FF7043")
+    /// Tired form (negative TSB) - soft coral
+    static let chartFormTired = Color(hex: "F87171")
 
-    // MARK: - Text Colors
+    // MARK: - Text Colors (Warmer Grays)
 
     /// Primary text - white
     static let textPrimary = Color.white
 
-    /// Secondary text - 60% white
-    static let textSecondary = Color(white: 0.6)
+    /// Secondary text - warmer gray (Zinc-400)
+    static let textSecondary = Color(hex: "A1A1AA")
 
-    /// Tertiary text - 40% white
-    static let textTertiary = Color(white: 0.4)
+    /// Tertiary text - darker gray (Zinc-600)
+    static let textTertiary = Color(hex: "52525B")
 
     // MARK: - Border Colors
 
-    /// Primary border - subtle white
-    static let borderPrimary = Color(white: 0.2)
+    /// Primary border - subtle
+    static let borderPrimary = Color(white: 0.15)
 
-    // MARK: - Semantic Gradients
+    // MARK: - Semantic Gradients (Removed for Cleaner Look)
+    // Single-color rings are now preferred over gradients
 
-    /// Readiness ring gradient for high scores
+    /// Readiness ring gradient for high scores (kept for compatibility)
     static var readinessGradientHigh: LinearGradient {
         LinearGradient(
-            colors: [Color(hex: "00E676"), Color(hex: "00D4AA")],
+            colors: [statusOptimal, statusOptimal],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -95,7 +109,7 @@ extension Color {
     /// Readiness ring gradient for medium scores
     static var readinessGradientMedium: LinearGradient {
         LinearGradient(
-            colors: [Color(hex: "FFB300"), Color(hex: "FF8F00")],
+            colors: [statusModerate, statusModerate],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -104,7 +118,7 @@ extension Color {
     /// Readiness ring gradient for low scores
     static var readinessGradientLow: LinearGradient {
         LinearGradient(
-            colors: [Color(hex: "FF5252"), Color(hex: "D32F2F")],
+            colors: [statusLow, statusLow],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -164,14 +178,19 @@ extension TrainingReadiness {
     /// Returns the themed color for this readiness level
     var themeColor: Color {
         switch self {
-        case .fullyReady: return .statusExcellent
-        case .mostlyReady: return .statusGood
+        case .fullyReady: return .statusOptimal
+        case .mostlyReady: return .accentPrimary  // Amber gold for mostly ready
         case .reducedCapacity: return .statusModerate
         case .restRecommended: return .statusLow
         }
     }
 
-    /// Returns the gradient for the readiness ring
+    /// Returns the solid color for the readiness ring (no gradients for cleaner look)
+    var ringColor: Color {
+        themeColor
+    }
+
+    /// Returns the gradient for the readiness ring (kept for backwards compatibility)
     var ringGradient: LinearGradient {
         switch self {
         case .fullyReady, .mostlyReady:
@@ -190,11 +209,11 @@ extension Color {
     /// Returns the appropriate color for a TSB value
     static func forTSB(_ tsb: Double) -> Color {
         switch tsb {
-        case 15...: return .statusExcellent
-        case 5..<15: return .statusGood
-        case -10..<5: return .chartFitness
-        case -25..<(-10): return .statusModerate
-        default: return .statusLow
+        case 15...: return .chartFormFresh      // Very fresh - soft green
+        case 5..<15: return .metricTertiary     // Fresh - teal
+        case -10..<5: return .textSecondary     // Neutral - gray
+        case -25..<(-10): return .statusModerate // Tired - amber
+        default: return .statusLow              // Very tired - coral
         }
     }
 }
@@ -228,13 +247,64 @@ extension View {
 // MARK: - TSSType Quality Colors
 
 extension TSSType {
-    /// Color indicating data quality - green for best, orange for fallback
+    /// Color indicating data quality - green for best, amber for fallback
     var qualityColor: Color {
         switch qualityRank {
-        case 3: return .statusExcellent  // Power
-        case 2: return .statusGood       // Pace
-        case 1: return .statusModerate   // HR
-        default: return .statusLow       // Estimated
+        case 3: return .statusOptimal    // Power - best quality
+        case 2: return .metricPrimary    // Pace - good quality
+        case 1: return .statusModerate   // HR - acceptable
+        default: return .statusLow       // Estimated - lowest
+        }
+    }
+}
+
+// MARK: - Letter Grade System
+
+/// Letter grade representation for readiness scores
+struct LetterGrade {
+    let grade: String
+    let color: Color
+
+    /// Returns letter grade for a 0-100 score
+    static func from(score: Double) -> LetterGrade {
+        let grade: String
+        switch score {
+        case 97...100: grade = "A+"
+        case 93..<97: grade = "A"
+        case 90..<93: grade = "A-"
+        case 87..<90: grade = "B+"
+        case 83..<87: grade = "B"
+        case 80..<83: grade = "B-"
+        case 77..<80: grade = "C+"
+        case 73..<77: grade = "C"
+        case 70..<73: grade = "C-"
+        case 67..<70: grade = "D+"
+        case 63..<67: grade = "D"
+        case 60..<63: grade = "D-"
+        default: grade = "F"
+        }
+        return LetterGrade(grade: grade, color: colorForGrade(grade))
+    }
+
+    /// Returns color for a letter grade
+    static func colorForGrade(_ grade: String) -> Color {
+        switch grade.prefix(1) {
+        case "A": return .statusOptimal    // Green
+        case "B": return .accentPrimary    // Gold/Amber
+        case "C": return .statusModerate   // Orange
+        case "D": return .statusLow        // Coral
+        default: return Color(hex: "EF4444") // Red for F
+        }
+    }
+
+    /// Returns status description for a letter grade
+    var statusDescription: String {
+        switch grade.prefix(1) {
+        case "A": return "Excellent"
+        case "B": return "Good"
+        case "C": return "Average"
+        case "D": return "Fair"
+        default: return "Rest Needed"
         }
     }
 }

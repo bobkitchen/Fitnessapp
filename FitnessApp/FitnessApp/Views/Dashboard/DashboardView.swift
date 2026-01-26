@@ -9,11 +9,12 @@ struct DashboardView: View {
     @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)]) private var recentWorkouts: [WorkoutRecord]
     @Query private var profiles: [AthleteProfile]
 
-    @State private var showingCoachSheet = false
-    @State private var selectedDate = Date()
+    // showingCoachSheet removed - Coach tab available in navigation
+    // selectedDate removed - PMC chart moved to Performance tab
     @State private var syncService: WorkoutSyncService?
     @State private var hasPerformedInitialSync = false
     @State private var showReadinessDetail = false
+    @State private var showGradeExplanation = false
 
     private var profile: AthleteProfile? { profiles.first }
     private var todayMetrics: DailyMetrics? {
@@ -31,21 +32,17 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Layout.sectionSpacing) {
-                    // Hero Readiness Ring
+                    // Hero Readiness Ring (single source of truth for readiness score)
                     heroReadinessSection
                         .animatedAppearance(index: 0)
 
-                    // Section 1: Training Status
+                    // Section 1: Training Status & Recommendation
                     trainingStatusSection
                         .animatedAppearance(index: 1)
 
-                    // Section 2: Recovery & Wellness
-                    recoverySection
-                        .animatedAppearance(index: 2)
-
-                    // Section 3: Activity
+                    // Section 2: Activity (Recovery details moved to Performance tab)
                     activitySection
-                        .animatedAppearance(index: 3)
+                        .animatedAppearance(index: 2)
                 }
                 .padding(Layout.screenPadding)
             }
@@ -53,23 +50,14 @@ struct DashboardView: View {
             .navigationTitle("Dashboard")
             .toolbarBackground(Color.backgroundPrimary, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingCoachSheet = true
-                    } label: {
-                        Image(systemName: "bubble.left.fill")
-                            .foregroundStyle(Color.accentSecondary)
-                    }
-                }
-            }
-            .sheet(isPresented: $showingCoachSheet) {
-                CoachView()
-            }
+            // Chat icon removed - Coach tab available in navigation
             .sheet(isPresented: $showReadinessDetail) {
                 if let result = calculateReadiness() {
                     ReadinessDetailSheet(result: result)
                 }
+            }
+            .sheet(isPresented: $showGradeExplanation) {
+                GradeExplanationSheet()
             }
             .refreshable {
                 await refreshData()
@@ -96,9 +84,9 @@ struct DashboardView: View {
             HeroReadinessRing(
                 score: result.score,
                 readiness: result.readiness,
-                hrvScore: result.components.hrvScore,
-                sleepScore: result.components.sleepScore,
-                onTap: { showReadinessDetail = true }
+                components: result.components,
+                onTap: { showReadinessDetail = true },
+                onInfoTap: { showGradeExplanation = true }
             )
         }
     }
@@ -107,84 +95,36 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var trainingStatusSection: some View {
+        // Use same calculated readiness as hero ring for consistency
+        let readinessResult = calculateReadiness()
+        let readiness = readinessResult?.readiness ?? .mostlyReady
+
         VStack(alignment: .leading, spacing: Layout.cardSpacing) {
             SectionHeader(title: "Training Status", icon: "chart.bar.fill")
 
-            // Coaching Card
-            CoachingCard(
-                readiness: todayMetrics?.trainingReadiness ?? .mostlyReady,
-                recommendation: generateRecommendation(),
-                suggestedWorkout: suggestWorkout(),
-                onAskCoach: { showingCoachSheet = true }
+            // Recommendation Card (formerly CoachingCard - redesigned without duplicate readiness)
+            RecommendationCard(
+                readiness: readiness,
+                recommendation: generateRecommendation(for: readiness),
+                suggestedWorkout: suggestWorkout(for: readiness)
             )
 
-            // PMC Metric Cards with Sparklines
-            HStack(spacing: Layout.cardSpacing) {
-                FitnessMetricCard(
-                    ctl: todayMetrics?.ctl ?? 0,
-                    trend: ctlTrend,
-                    change: ctlChange,
-                    history: ctlHistory
-                )
-                FatigueMetricCard(
-                    atl: todayMetrics?.atl ?? 0,
-                    trend: atlTrend,
-                    change: atlChange,
-                    history: atlHistory
-                )
-                FormMetricCard(
-                    tsb: todayMetrics?.tsb ?? 0,
-                    history: tsbHistory
-                )
-            }
-
-            // PMC Mini Chart
-            PMCMiniChart(
-                data: pmcDataPoints,
-                selectedDate: selectedDate,
-                onSelectDate: { date in selectedDate = date }
+            // Compact Training Load Row (replaces 3 separate cards)
+            TrainingLoadRow(
+                ctl: todayMetrics?.ctl ?? 0,
+                atl: todayMetrics?.atl ?? 0,
+                tsb: todayMetrics?.tsb ?? 0,
+                ctlTrend: ctlTrend,
+                atlTrend: atlTrend
             )
+
+            // PMC Mini Chart moved to Performance tab
         }
     }
 
     // MARK: - Recovery Section
-
-    @ViewBuilder
-    private var recoverySection: some View {
-        VStack(alignment: .leading, spacing: Layout.cardSpacing) {
-            SectionHeader(title: "Recovery & Wellness", icon: "heart.fill")
-
-            // Wellness Metric Cards with Sparklines
-            HStack(spacing: Layout.cardSpacing) {
-                HRVMetricCard(
-                    hrv: todayMetrics?.hrvRMSSD,
-                    status: hrvStatus,
-                    trend: hrvTrend,
-                    history: hrvHistory
-                )
-                SleepMetricCard(
-                    hours: todayMetrics?.sleepHours,
-                    quality: sleepStatus,
-                    history: sleepHistory
-                )
-                RestingHRMetricCard(
-                    rhr: todayMetrics?.restingHR,
-                    status: rhrStatus,
-                    baseline: rhrBaseline,
-                    history: rhrHistory
-                )
-            }
-
-            // Sleep Detail
-            SleepDetailCard(sleepData: todaySleepData)
-
-            // Wellness Trends
-            WellnessTrendsChart(
-                hrvData: hrvTrendData,
-                rhrData: rhrTrendData
-            )
-        }
-    }
+    // Note: Detailed wellness metrics moved to Performance tab
+    // Dashboard now focuses on actionable readiness info only
 
     // MARK: - Activity Section
 
@@ -206,45 +146,7 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Computed Properties
-
-    private var pmcDataPoints: [PMCDataPoint] {
-        last7DaysMetrics.map { metrics in
-            PMCDataPoint(
-                date: metrics.date,
-                tss: metrics.totalTSS,
-                ctl: metrics.ctl,
-                atl: metrics.atl,
-                tsb: metrics.tsb
-            )
-        }
-    }
-
-    // MARK: - Sparkline History Data
-
-    private var ctlHistory: [Double] {
-        last7DaysMetrics.map { $0.ctl }
-    }
-
-    private var atlHistory: [Double] {
-        last7DaysMetrics.map { $0.atl }
-    }
-
-    private var tsbHistory: [Double] {
-        last7DaysMetrics.map { $0.tsb }
-    }
-
-    private var hrvHistory: [Double] {
-        last7DaysMetrics.compactMap { $0.hrvRMSSD }
-    }
-
-    private var sleepHistory: [Double] {
-        last7DaysMetrics.compactMap { $0.sleepHours }
-    }
-
-    private var rhrHistory: [Double] {
-        last7DaysMetrics.compactMap { $0.restingHR }.map { Double($0) }
-    }
+    // MARK: - Computed Properties for Training Load Row
 
     private var ctlTrend: Trend? {
         guard last7DaysMetrics.count >= 2 else { return nil }
@@ -253,12 +155,6 @@ struct DashboardView: View {
         if change > 1 { return .up }
         if change < -1 { return .down }
         return .stable
-    }
-
-    private var ctlChange: Double? {
-        guard last7DaysMetrics.count >= 2 else { return nil }
-        let recent = last7DaysMetrics.suffix(2)
-        return recent.last!.ctl - recent.first!.ctl
     }
 
     private var atlTrend: Trend? {
@@ -270,59 +166,12 @@ struct DashboardView: View {
         return .stable
     }
 
-    private var atlChange: Double? {
-        guard last7DaysMetrics.count >= 2 else { return nil }
-        let recent = last7DaysMetrics.suffix(2)
-        return recent.last!.atl - recent.first!.atl
-    }
-
-    private var hrvStatus: HRVStatus? {
-        guard let hrv = todayMetrics?.hrvRMSSD else { return nil }
-        let baseline = hrvBaseline ?? 45
-        let percent = hrv / baseline
-        switch percent {
-        case 1.1...: return .elevated
-        case 0.9..<1.1: return .normal
-        case 0.8..<0.9: return .belowNormal
-        default: return .low
-        }
-    }
-
-    private var hrvTrend: Trend? {
-        guard hrvTrendData.count >= 3 else { return nil }
-        let recent = Array(hrvTrendData.suffix(3))
-        let avg = recent.map(\.value).reduce(0, +) / Double(recent.count)
-        let older = Array(hrvTrendData.prefix(4))
-        let olderAvg = older.map(\.value).reduce(0, +) / Double(older.count)
-        if avg > olderAvg * 1.05 { return .up }
-        if avg < olderAvg * 0.95 { return .down }
-        return .stable
-    }
+    // MARK: - Wellness Baselines (used by calculateReadiness)
 
     private var hrvBaseline: Double? {
         let values = last7DaysMetrics.compactMap { $0.hrvRMSSD }
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
-    }
-
-    private var hrvTrendData: [(date: Date, value: Double)] {
-        last7DaysMetrics.compactMap { metrics in
-            guard let hrv = metrics.hrvRMSSD else { return nil }
-            return (metrics.date, hrv)
-        }
-    }
-
-    private var rhrStatus: RHRStatus? {
-        guard let rhr = todayMetrics?.restingHR else { return nil }
-        guard let baseline = rhrBaseline else { return .normal }
-        let deviation = Double(rhr) - baseline
-        switch deviation {
-        case ...(-3): return .veryLow
-        case -3..<0: return .low
-        case 0..<3: return .normal
-        case 3..<6: return .elevated
-        default: return .high
-        }
     }
 
     private var rhrBaseline: Double? {
@@ -331,38 +180,7 @@ struct DashboardView: View {
         return values.reduce(0, +) / Double(values.count)
     }
 
-    private var rhrTrendData: [(date: Date, value: Int)] {
-        last7DaysMetrics.compactMap { metrics in
-            guard let rhr = metrics.restingHR else { return nil }
-            return (metrics.date, rhr)
-        }
-    }
-
-    private var sleepStatus: SleepStatus? {
-        guard let quality = todayMetrics?.sleepQuality else { return nil }
-        switch quality {
-        case 0.8...: return .excellent
-        case 0.6..<0.8: return .good
-        case 0.4..<0.6: return .fair
-        default: return .poor
-        }
-    }
-
-    private var todaySleepData: SleepData? {
-        guard let metrics = todayMetrics,
-              let hours = metrics.sleepHours else { return nil }
-
-        return SleepData(
-            totalSleepHours: hours,
-            deepSleepMinutes: metrics.deepSleepMinutes ?? 0,
-            remSleepMinutes: metrics.remSleepMinutes ?? 0,
-            coreSleepMinutes: metrics.coreSleepMinutes ?? 0,
-            awakeMinutes: metrics.awakeMinutes ?? 0,
-            efficiency: metrics.sleepEfficiency ?? 0,
-            startTime: metrics.sleepStartTime,
-            endTime: metrics.sleepEndTime
-        )
-    }
+    // MARK: - Weekly Activity Stats
 
     private var weeklyTSS: Double {
         let calendar = Calendar.current
@@ -398,12 +216,10 @@ struct DashboardView: View {
 
     // MARK: - Helper Methods
 
-    private func generateRecommendation() -> String {
-        guard let metrics = todayMetrics else {
+    private func generateRecommendation(for readiness: TrainingReadiness) -> String {
+        guard todayMetrics != nil else {
             return "No data available yet. Complete your first workout to get personalized recommendations."
         }
-
-        let readiness = metrics.trainingReadiness
 
         switch readiness {
         case .fullyReady:
@@ -417,10 +233,10 @@ struct DashboardView: View {
         }
     }
 
-    private func suggestWorkout() -> String? {
-        guard let metrics = todayMetrics else { return nil }
+    private func suggestWorkout(for readiness: TrainingReadiness) -> String? {
+        guard todayMetrics != nil else { return nil }
 
-        switch metrics.trainingReadiness {
+        switch readiness {
         case .fullyReady:
             return "Threshold intervals or hard group ride"
         case .mostlyReady:
@@ -435,41 +251,65 @@ struct DashboardView: View {
     private func calculateReadiness() -> ReadinessResult? {
         guard let metrics = todayMetrics else { return nil }
 
-        var hrvScore: Double? = nil
-        if let hrv = metrics.hrvRMSSD, let baseline = hrvBaseline {
-            hrvScore = min(100, max(0, 70 + (hrv - baseline) * 2))
+        // HRV Analysis using WellnessAnalyzer
+        let hrvAnalysis: HRVAnalysis?
+        if let hrv = metrics.hrvRMSSD {
+            let baseline7Day = last7DaysMetrics.compactMap { $0.hrvRMSSD }
+            hrvAnalysis = WellnessAnalyzer.analyzeHRV(
+                currentHRV: hrv,
+                baseline7Day: baseline7Day
+            )
+        } else {
+            hrvAnalysis = nil
         }
 
-        var sleepScore: Double? = nil
-        if let quality = metrics.sleepQuality {
-            sleepScore = quality * 100
+        // Sleep Analysis
+        let sleepAnalysis: SleepAnalysis?
+        if let hours = metrics.sleepHours {
+            sleepAnalysis = WellnessAnalyzer.analyzeSleep(
+                hoursSlept: hours,
+                sleepQuality: metrics.sleepQuality,
+                deepSleepMinutes: metrics.deepSleepMinutes,
+                remSleepMinutes: metrics.remSleepMinutes,
+                efficiency: metrics.sleepEfficiency
+            )
+        } else {
+            sleepAnalysis = nil
         }
 
-        var rhrScore: Double? = nil
-        if let rhr = metrics.restingHR, let baseline = rhrBaseline {
-            let deviation = Double(rhr) - baseline
-            rhrScore = min(100, max(0, 70 - deviation * 5))
+        // RHR Analysis
+        let rhrAnalysis: RHRAnalysis?
+        if let rhr = metrics.restingHR {
+            let baseline7Day = last7DaysMetrics.compactMap { $0.restingHR }.map { Double($0) }
+            rhrAnalysis = WellnessAnalyzer.analyzeRestingHR(
+                currentRHR: rhr,
+                baseline7Day: baseline7Day
+            )
+        } else {
+            rhrAnalysis = nil
         }
 
-        let recoveryScore: Double? = 70  // Default
+        // Calculate days since hard effort (TSS > 100 = hard workout)
+        let hardWorkoutThreshold: Double = 100
+        let daysSinceHardEffort = recentWorkouts
+            .first { $0.tss >= hardWorkoutThreshold }
+            .map { workout -> Int in
+                let days = Calendar.current.dateComponents([.day], from: workout.startDate, to: Date()).day ?? 0
+                return max(0, days)
+            }
 
-        let components = ReadinessComponents(
-            hrvScore: hrvScore,
-            sleepScore: sleepScore,
-            rhrScore: rhrScore,
-            recoveryScore: recoveryScore,
-            stressScore: nil
-        )
+        // Get TSB (Form) from today's metrics
+        let tsb = metrics.tsb
 
-        let score = [hrvScore, sleepScore, rhrScore, recoveryScore]
-            .compactMap { $0 }
-            .reduce(0, +) / 4
-
-        return ReadinessResult(
-            score: score,
-            readiness: TrainingReadiness(score: score),
-            components: components,
-            insights: []
+        // Use WellnessAnalyzer for weighted, comprehensive calculation
+        return WellnessAnalyzer.calculateReadinessScore(
+            hrvAnalysis: hrvAnalysis,
+            sleepAnalysis: sleepAnalysis,
+            rhrAnalysis: rhrAnalysis,
+            daysSinceHardEffort: daysSinceHardEffort,
+            tsb: tsb,
+            mindfulMinutes: nil,
+            stateOfMind: nil
         )
     }
 
@@ -506,7 +346,7 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - Section Header
+// MARK: - Section Header (Refined)
 
 struct SectionHeader: View {
     let title: String
@@ -516,22 +356,22 @@ struct SectionHeader: View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: icon)
                 .font(.system(size: IconSize.small))
-                .foregroundStyle(Color.accentPrimary)
+                .foregroundStyle(Color.accentPrimary)  // Amber gold accent
             Text(title.uppercased())
                 .font(AppFont.labelSmall)
                 .tracking(0.5)
+                .foregroundStyle(Color.textSecondary)  // Slightly more visible
         }
-        .foregroundStyle(Color.textTertiary)
     }
 }
 
-// MARK: - Recent Workouts Card
+// MARK: - Recent Workouts Card (Refined with Left Accent Bars)
 
 struct RecentWorkoutsCard: View {
     let workouts: [WorkoutRecord]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             Text("Recent Workouts".uppercased())
                 .font(AppFont.labelSmall)
                 .foregroundStyle(Color.textTertiary)
@@ -544,11 +384,9 @@ struct RecentWorkoutsCard: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, Spacing.lg)
             } else {
-                ForEach(workouts) { workout in
-                    WorkoutRow(workout: workout)
-                    if workout.id != workouts.last?.id {
-                        Divider()
-                            .background(Color.backgroundTertiary)
+                VStack(spacing: Spacing.sm) {  // Spacing instead of dividers
+                    ForEach(workouts) { workout in
+                        RefinedWorkoutRow(workout: workout)
                     }
                 }
             }
@@ -558,18 +396,16 @@ struct RecentWorkoutsCard: View {
     }
 }
 
-struct WorkoutRow: View {
+/// Refined workout row with left accent bar instead of icon background
+struct RefinedWorkoutRow: View {
     let workout: WorkoutRecord
 
     var body: some View {
         HStack(spacing: Spacing.sm) {
-            // Activity icon with colored background
-            Image(systemName: workout.activityIcon)
-                .font(.system(size: IconSize.medium))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(workout.activityCategory.themeColor)
-                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small))
+            // Left accent bar
+            RoundedRectangle(cornerRadius: 2)
+                .fill(workout.activityCategory.themeColor)
+                .frame(width: 3, height: 44)
 
             VStack(alignment: .leading, spacing: Spacing.xxxs) {
                 Text(workout.title ?? workout.activityType)
@@ -583,20 +419,30 @@ struct WorkoutRow: View {
 
             Spacer()
 
+            // Larger TSS display
             VStack(alignment: .trailing, spacing: Spacing.xxxs) {
                 Text(String(format: "%.0f", workout.tss))
-                    .font(AppFont.metricSmall)
+                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
                     .foregroundStyle(Color.textPrimary)
                 Text("TSS")
                     .font(AppFont.captionSmall)
                     .foregroundStyle(Color.textTertiary)
             }
         }
-        .padding(.vertical, Spacing.xs)
     }
 }
 
-// MARK: - Weekly Summary Card
+// Legacy WorkoutRow kept for compatibility
+struct WorkoutRow: View {
+    let workout: WorkoutRecord
+
+    var body: some View {
+        RefinedWorkoutRow(workout: workout)
+    }
+}
+
+// MARK: - Weekly Summary Card (Refined with Hero TSS)
 
 struct WeeklySummaryCard: View {
     let totalTSS: Double
@@ -605,31 +451,49 @@ struct WeeklySummaryCard: View {
     let byActivity: [ActivityCategory: Double]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             Text("This Week".uppercased())
                 .font(AppFont.labelSmall)
                 .foregroundStyle(Color.textTertiary)
                 .tracking(0.5)
 
-            HStack(spacing: Spacing.lg) {
-                SummaryMetric(value: String(format: "%.0f", totalTSS), label: "TSS", color: .accentPrimary)
-                SummaryMetric(value: String(format: "%.1fh", totalHours), label: "Time", color: .chartFitness)
-                SummaryMetric(value: "\(workoutCount)", label: "Workouts", color: .accentSecondary)
+            // Hero TSS number - largest, accent color
+            HStack(alignment: .lastTextBaseline, spacing: Spacing.xs) {
+                Text(String(format: "%.0f", totalTSS))
+                    .font(.system(size: 40, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.accentPrimary)
+                Text("TSS")
+                    .font(AppFont.labelMedium)
+                    .foregroundStyle(Color.textTertiary)
             }
 
-            if !byActivity.isEmpty {
-                Divider()
-                    .background(Color.backgroundTertiary)
+            // Secondary metrics - smaller
+            HStack(spacing: Spacing.xl) {
+                CompactSummaryMetric(
+                    value: String(format: "%.1f", totalHours),
+                    unit: "hrs",
+                    label: "Time"
+                )
+                CompactSummaryMetric(
+                    value: "\(workoutCount)",
+                    unit: nil,
+                    label: "Workouts"
+                )
+            }
 
-                HStack(spacing: Spacing.sm) {
-                    ForEach(byActivity.sorted(by: { $0.value > $1.value }), id: \.key) { category, tss in
+            // Activity breakdown - simplified, no icons
+            if !byActivity.isEmpty {
+                HStack(spacing: Spacing.md) {
+                    ForEach(byActivity.sorted(by: { $0.value > $1.value }).prefix(3), id: \.key) { category, tss in
                         HStack(spacing: Spacing.xxs) {
-                            Image(systemName: category.icon)
-                                .font(.system(size: IconSize.small))
-                            Text(String(format: "%.0f", tss))
-                                .font(AppFont.labelMedium)
+                            Circle()
+                                .fill(category.themeColor)
+                                .frame(width: 6, height: 6)
+                            Text("\(category.rawValue) \(String(format: "%.0f", tss))")
+                                .font(AppFont.captionSmall)
+                                .foregroundStyle(Color.textSecondary)
                         }
-                        .foregroundStyle(category.themeColor)
                     }
                 }
             }
@@ -639,6 +503,32 @@ struct WeeklySummaryCard: View {
     }
 }
 
+/// Compact metric for secondary stats in weekly summary
+struct CompactSummaryMetric: View {
+    let value: String
+    let unit: String?
+    let label: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.xxxs) {
+            HStack(alignment: .lastTextBaseline, spacing: Spacing.xxs) {
+                Text(value)
+                    .font(AppFont.metricSmall)
+                    .foregroundStyle(Color.textPrimary)
+                if let unit {
+                    Text(unit)
+                        .font(AppFont.captionSmall)
+                        .foregroundStyle(Color.textTertiary)
+                }
+            }
+            Text(label)
+                .font(AppFont.captionSmall)
+                .foregroundStyle(Color.textTertiary)
+        }
+    }
+}
+
+// Legacy SummaryMetric kept for compatibility
 struct SummaryMetric: View {
     let value: String
     let label: String
@@ -662,18 +552,26 @@ struct ReadinessDetailSheet: View {
     let result: ReadinessResult
     @Environment(\.dismiss) private var dismiss
 
+    private var overallGrade: LetterGrade {
+        LetterGrade.from(score: result.score)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Spacing.lg) {
-                    // Large readiness display
+                    // Large readiness display with letter grade
                     VStack(spacing: Spacing.sm) {
-                        Text("\(Int(result.score))")
-                            .font(AppFont.displayLarge)
-                            .foregroundStyle(result.readiness.themeColor)
+                        Text(overallGrade.grade)
+                            .font(.system(size: 72, weight: .bold, design: .rounded))
+                            .foregroundStyle(overallGrade.color)
+
+                        Text("(\(Int(result.score)) / 100)")
+                            .font(AppFont.bodyLarge)
+                            .foregroundStyle(Color.textTertiary)
 
                         Text(result.readiness.rawValue)
-                            .font(AppFont.bodyLarge)
+                            .font(AppFont.titleMedium)
                             .foregroundStyle(Color.textSecondary)
 
                         Text(result.readiness.description)
@@ -684,7 +582,7 @@ struct ReadinessDetailSheet: View {
                     }
                     .padding(.top, Spacing.lg)
 
-                    // Component breakdown
+                    // Component breakdown with letter grades
                     VStack(alignment: .leading, spacing: Spacing.md) {
                         Text("Components".uppercased())
                             .font(AppFont.labelSmall)
@@ -701,6 +599,9 @@ struct ReadinessDetailSheet: View {
                         }
                         if let recovery = result.components.recoveryScore {
                             ComponentDetailRow(label: "Recovery", score: recovery, icon: "arrow.counterclockwise")
+                        }
+                        if let tsb = result.components.tsbScore {
+                            ComponentDetailRow(label: "Form", score: tsb, icon: "chart.line.uptrend.xyaxis")
                         }
                     }
                     .padding(Spacing.md)
@@ -750,20 +651,15 @@ struct ComponentDetailRow: View {
     let score: Double
     let icon: String
 
-    private var color: Color {
-        switch score {
-        case 80...100: return .statusExcellent
-        case 60..<80: return .statusGood
-        case 40..<60: return .statusModerate
-        default: return .statusLow
-        }
+    private var grade: LetterGrade {
+        LetterGrade.from(score: score)
     }
 
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: icon)
                 .font(.system(size: IconSize.medium))
-                .foregroundStyle(color)
+                .foregroundStyle(grade.color)
                 .frame(width: 30)
 
             Text(label)
@@ -779,18 +675,232 @@ struct ComponentDetailRow: View {
                         .fill(Color.backgroundTertiary)
 
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(color)
+                        .fill(grade.color)
                         .frame(width: geometry.size.width * min(score / 100, 1))
                 }
             }
             .frame(width: 80, height: 6)
 
-            Text("\(Int(score))")
-                .font(AppFont.metricSmall)
-                .foregroundStyle(color)
+            // Letter grade instead of numeric score
+            Text(grade.grade)
+                .font(AppFont.labelMedium)
+                .fontWeight(.semibold)
+                .foregroundStyle(grade.color)
                 .frame(width: 36, alignment: .trailing)
         }
         .padding(.vertical, Spacing.xs)
+    }
+}
+
+// MARK: - Grade Explanation Sheet
+
+/// Sheet explaining the letter grade system and what each component measures
+struct GradeExplanationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Spacing.lg) {
+                    // Grade Scale Section
+                    gradeScaleSection
+
+                    // What Each Component Measures
+                    componentExplanationsSection
+
+                    // How to Improve Section
+                    improvementTipsSection
+                }
+                .padding(Layout.screenPadding)
+            }
+            .background(Color.backgroundPrimary)
+            .navigationTitle("Understanding Your Score")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color.backgroundPrimary, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(Color.accentPrimary)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    // MARK: - Grade Scale Section
+
+    private var gradeScaleSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("Grade Scale".uppercased())
+                .font(AppFont.labelSmall)
+                .foregroundStyle(Color.textTertiary)
+                .tracking(0.5)
+
+            VStack(spacing: Spacing.sm) {
+                GradeScaleRow(grades: "A+ to A-", range: "90-100", description: "Excellent - You're well recovered", color: .statusOptimal)
+                GradeScaleRow(grades: "B+ to B-", range: "80-89", description: "Good - Normal training appropriate", color: .accentPrimary)
+                GradeScaleRow(grades: "C+ to C-", range: "70-79", description: "Average - Listen to your body", color: .statusModerate)
+                GradeScaleRow(grades: "D+ to D-", range: "60-69", description: "Fair - Consider easier effort", color: .statusLow)
+                GradeScaleRow(grades: "F", range: "<60", description: "Rest - Recovery needed", color: Color(hex: "EF4444"))
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
+    }
+
+    // MARK: - Component Explanations Section
+
+    private var componentExplanationsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("What We Measure".uppercased())
+                .font(AppFont.labelSmall)
+                .foregroundStyle(Color.textTertiary)
+                .tracking(0.5)
+
+            VStack(spacing: Spacing.md) {
+                ComponentExplanationRow(
+                    icon: "waveform.path.ecg",
+                    title: "HRV (30%)",
+                    description: "Heart rate variability measures nervous system recovery. Higher is generally better.",
+                    weight: "Most important recovery indicator"
+                )
+
+                ComponentExplanationRow(
+                    icon: "moon.fill",
+                    title: "Sleep (25%)",
+                    description: "Sleep duration and quality. Aims for 7-9 hours with good deep and REM sleep.",
+                    weight: "Critical for adaptation"
+                )
+
+                ComponentExplanationRow(
+                    icon: "heart.fill",
+                    title: "Resting HR (15%)",
+                    description: "Lower resting heart rate indicates better cardiovascular recovery. Elevated = fatigue.",
+                    weight: "Cardiovascular status"
+                )
+
+                ComponentExplanationRow(
+                    icon: "arrow.counterclockwise",
+                    title: "Recovery (15%)",
+                    description: "Days since your last hard training session. More rest = better recovery.",
+                    weight: "Accumulated fatigue"
+                )
+
+                ComponentExplanationRow(
+                    icon: "chart.line.uptrend.xyaxis",
+                    title: "Form / TSB (10%)",
+                    description: "Training Stress Balance shows if you're fresh (positive) or fatigued (negative).",
+                    weight: "Training load balance"
+                )
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
+    }
+
+    // MARK: - Improvement Tips Section
+
+    private var improvementTipsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("How to Improve".uppercased())
+                .font(AppFont.labelSmall)
+                .foregroundStyle(Color.textTertiary)
+                .tracking(0.5)
+
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                ImprovementTip(text: "Maintain consistent sleep schedule")
+                ImprovementTip(text: "Alternate hard and easy training days")
+                ImprovementTip(text: "Stay hydrated and limit alcohol")
+                ImprovementTip(text: "Manage stress with mindfulness")
+                ImprovementTip(text: "Taper before important events")
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
+    }
+}
+
+// MARK: - Grade Scale Row
+
+private struct GradeScaleRow: View {
+    let grades: String
+    let range: String
+    let description: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: Spacing.sm) {
+            Text(grades)
+                .font(AppFont.labelMedium)
+                .fontWeight(.semibold)
+                .foregroundStyle(color)
+                .frame(width: 70, alignment: .leading)
+
+            Text(range)
+                .font(AppFont.captionLarge)
+                .foregroundStyle(Color.textTertiary)
+                .frame(width: 45, alignment: .leading)
+
+            Text(description)
+                .font(AppFont.captionLarge)
+                .foregroundStyle(Color.textSecondary)
+                .lineLimit(2)
+
+            Spacer()
+        }
+    }
+}
+
+// MARK: - Component Explanation Row
+
+private struct ComponentExplanationRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    let weight: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.sm) {
+            Image(systemName: icon)
+                .font(.system(size: IconSize.medium))
+                .foregroundStyle(Color.accentPrimary)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: Spacing.xxxs) {
+                Text(title)
+                    .font(AppFont.labelMedium)
+                    .fontWeight(.medium)
+                    .foregroundStyle(Color.textPrimary)
+
+                Text(description)
+                    .font(AppFont.captionLarge)
+                    .foregroundStyle(Color.textSecondary)
+                    .lineSpacing(2)
+
+                Text(weight)
+                    .font(AppFont.captionSmall)
+                    .foregroundStyle(Color.textTertiary)
+                    .italic()
+            }
+        }
+    }
+}
+
+// MARK: - Improvement Tip
+
+private struct ImprovementTip: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.xs) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: IconSize.small))
+                .foregroundStyle(Color.statusOptimal)
+
+            Text(text)
+                .font(AppFont.bodySmall)
+                .foregroundStyle(Color.textSecondary)
+        }
     }
 }
 

@@ -257,14 +257,13 @@ struct CoachView: View {
             let assistantMessage = ChatMessage(role: .assistant, content: streamingText)
             messages.append(assistantMessage)
 
-            // DISABLED: Memory extraction - testing if this is causing freeze
-            // Task {
-            //     await MemoryExtractionService.extractAndSave(
-            //         userMessage: userQuestion,
-            //         assistantResponse: streamingText,
-            //         modelContext: modelContext
-            //     )
-            // }
+            // Extract memories - completely fire and forget
+            // The method handles its own Task.detached internally
+            MemoryExtractionService.extractAndSave(
+                userMessage: userQuestion,
+                assistantResponse: streamingText,
+                modelContext: modelContext
+            )
 
         } catch {
             errorMessage = error.localizedDescription

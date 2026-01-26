@@ -81,14 +81,161 @@ struct DashboardMetricCard: View {
 
     private func trendColor(for trend: Trend) -> Color {
         switch trend {
-        case .up: return .statusExcellent
+        case .up: return .statusOptimal
         case .down: return .statusLow
         case .stable: return .textTertiary
         }
     }
 }
 
-// MARK: - Specialized PMC Cards
+// MARK: - Refined Training Load Row
+
+/// Redesigned training load display with better spacing and larger numbers
+/// No visible dividers - uses spacing instead for cleaner look
+struct TrainingLoadRow: View {
+    let ctl: Double
+    let atl: Double
+    let tsb: Double
+    let ctlTrend: Trend?
+    let atlTrend: Trend?
+
+    private var fitnessStatus: String {
+        switch ctl {
+        case 0..<20: return "Base"
+        case 20..<40: return "Building"
+        case 40..<60: return "Moderate"
+        case 60..<80: return "Strong"
+        default: return "Peak"
+        }
+    }
+
+    private var fatigueStatus: String {
+        switch atl {
+        case 0..<30: return "Low"
+        case 30..<50: return "Moderate"
+        case 50..<70: return "High"
+        default: return "Very High"
+        }
+    }
+
+    private var formStatus: String {
+        switch tsb {
+        case 15...: return "Very Fresh"
+        case 5..<15: return "Fresh"
+        case -10..<5: return "Neutral"
+        case -25..<(-10): return "Tired"
+        default: return "Very Tired"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("Training Load".uppercased())
+                .font(AppFont.labelSmall)
+                .foregroundStyle(Color.textTertiary)
+                .tracking(0.5)
+
+            // Metrics row - no dividers, more breathing room
+            HStack(spacing: 0) {
+                // Fitness (CTL)
+                RefinedMetricItem(
+                    label: "Fitness",
+                    value: String(format: "%.0f", ctl),
+                    status: fitnessStatus,
+                    trend: ctlTrend,
+                    color: .metricPrimary  // Soft blue
+                )
+
+                // Fatigue (ATL)
+                RefinedMetricItem(
+                    label: "Fatigue",
+                    value: String(format: "%.0f", atl),
+                    status: fatigueStatus,
+                    trend: atlTrend,
+                    color: .metricSecondary  // Soft purple
+                )
+
+                // Form (TSB)
+                RefinedMetricItem(
+                    label: "Form",
+                    value: String(format: "%+.0f", tsb),
+                    status: formStatus,
+                    trend: nil,
+                    color: Color.forTSB(tsb)
+                )
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
+    }
+}
+
+/// Refined metric item with larger numbers and better hierarchy
+struct RefinedMetricItem: View {
+    let label: String
+    let value: String
+    let status: String
+    let trend: Trend?
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .center, spacing: Spacing.xxs) {
+            // Large value - prominent
+            HStack(spacing: Spacing.xxs) {
+                Text(value)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(color)
+
+                if let trend = trend {
+                    Image(systemName: trend.icon)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(trendColor(for: trend))
+                }
+            }
+
+            // Label
+            Text(label)
+                .font(AppFont.captionSmall)
+                .foregroundStyle(Color.textTertiary)
+
+            // Status
+            Text(status)
+                .font(AppFont.captionSmall)
+                .foregroundStyle(Color.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func trendColor(for trend: Trend) -> Color {
+        switch trend {
+        case .up: return .statusOptimal
+        case .down: return .statusLow
+        case .stable: return .textTertiary
+        }
+    }
+}
+
+// Legacy alias for backwards compatibility
+struct CompactMetricItem: View {
+    let label: String
+    let value: String
+    let status: String
+    let trend: Trend?
+    let color: Color
+
+    var body: some View {
+        RefinedMetricItem(
+            label: label,
+            value: value,
+            status: status,
+            trend: trend,
+            color: color
+        )
+    }
+}
+
+// MARK: - Specialized PMC Cards (kept for backwards compatibility)
 
 /// Fitness (CTL) metric card
 struct FitnessMetricCard: View {
@@ -172,8 +319,8 @@ struct HRVMetricCard: View {
     private var color: Color {
         guard let status else { return .textTertiary }
         switch status {
-        case .elevated: return .statusExcellent
-        case .normal: return .statusGood
+        case .elevated: return .statusOptimal
+        case .normal: return .accentPrimary
         case .belowNormal: return .statusModerate
         case .low: return .statusLow
         case .unknown: return .textTertiary
@@ -201,8 +348,8 @@ struct SleepMetricCard: View {
     private var color: Color {
         guard let quality else { return .textTertiary }
         switch quality {
-        case .excellent: return .statusExcellent
-        case .good: return .statusGood
+        case .excellent: return .statusOptimal
+        case .good: return .accentPrimary
         case .fair: return .statusModerate
         case .poor: return .statusLow
         }
@@ -236,8 +383,8 @@ struct RestingHRMetricCard: View {
     private var color: Color {
         guard let status else { return .textTertiary }
         switch status {
-        case .veryLow, .low: return .statusExcellent
-        case .normal: return .statusGood
+        case .veryLow, .low: return .statusOptimal
+        case .normal: return .accentPrimary
         case .elevated: return .statusModerate
         case .high: return .statusLow
         case .unknown: return .textTertiary

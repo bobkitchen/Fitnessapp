@@ -60,7 +60,7 @@ final class WorkoutSyncService {
 
     // MARK: - Main Sync Methods
 
-    /// Perform initial historical sync (6 months)
+    /// Perform initial historical sync (12 months)
     func performInitialSync(modelContext: ModelContext, profile: AthleteProfile?) async {
         guard !isSyncing else { return }
         isSyncing = true
@@ -77,7 +77,7 @@ final class WorkoutSyncService {
             loadScalingProfile(from: modelContext)
 
             let calendar = Calendar.current
-            let startDate = calendar.date(byAdding: .month, value: -6, to: Date())!
+            let startDate = calendar.date(byAdding: .month, value: -12, to: Date())!
 
             // Fetch workouts from HealthKit
             syncProgress.phase = .fetchingWorkouts

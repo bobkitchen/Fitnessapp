@@ -91,8 +91,11 @@ enum Layout {
     /// Compact card height
     static let cardHeightCompact: CGFloat = 80
 
-    /// Hero ring size
-    static let heroRingSize: CGFloat = 200
+    /// Hero ring size (reduced for more compact display)
+    static let heroRingSize: CGFloat = 160
+
+    /// Hero ring stroke width (thinner for refined look)
+    static let heroRingStroke: CGFloat = 12
 
     /// Chart height - compact
     static let chartHeightCompact: CGFloat = 80
@@ -111,6 +114,9 @@ enum Layout {
 
     /// Card spacing
     static let cardSpacing: CGFloat = Spacing.sm
+
+    /// Card internal padding (reduced from lg to md)
+    static let cardPadding: CGFloat = Spacing.md
 }
 
 // MARK: - Spacing Modifier Extensions

@@ -2,20 +2,20 @@ import SwiftUI
 import SwiftData
 import Charts
 
-/// Performance view showing PMC chart and detailed training metrics
+/// Unified Performance view combining PMC analytics and workout history
 struct PerformanceView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: [SortDescriptor(\DailyMetrics.date, order: .forward)]) private var allMetrics: [DailyMetrics]
     @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)]) private var workouts: [WorkoutRecord]
 
     @State private var selectedDateRange: ChartDateRange = .month
-    @State private var selectedTab: PerformanceTab = .pmc
-    @State private var selectedDate: Date?
+    @State private var selectedSegment: PerformanceSegment = .training
+    @State private var showingFullPMC = false
+    @State private var selectedWorkout: WorkoutRecord?
 
-    enum PerformanceTab: String, CaseIterable {
-        case pmc = "PMC"
+    enum PerformanceSegment: String, CaseIterable {
+        case training = "Training"
         case wellness = "Wellness"
-        case load = "Training Load"
     }
 
     private var pmcData: [PMCDataPoint] {
@@ -30,129 +30,257 @@ struct PerformanceView: View {
         }
     }
 
+    private var latestMetrics: DailyMetrics? {
+        allMetrics.last
+    }
+
+    private var acwr: Double? {
+        guard let latest = latestMetrics, latest.ctl > 0 else { return nil }
+        return latest.atl / latest.ctl
+    }
+
+    private var acwrStatus: ACWRStatus {
+        PMCCalculator.analyzeACWR(acwr)
+    }
+
+    private var showACWRWarning: Bool {
+        guard let ratio = acwr else { return false }
+        return ratio < 0.8 || ratio > 1.3
+    }
+
+    private var recentWorkouts: [WorkoutRecord] {
+        Array(workouts.prefix(3))
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Tab picker
-                Picker("View", selection: $selectedTab) {
-                    ForEach(PerformanceTab.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
+            ScrollView {
+                VStack(spacing: Spacing.lg) {
+                    // Conditional ACWR Warning Banner
+                    if showACWRWarning {
+                        acwrWarningBanner
                     }
-                }
-                .pickerStyle(.segmented)
-                .padding(Spacing.md)
 
-                // Content
-                ScrollView {
-                    VStack(spacing: Spacing.lg) {
-                        switch selectedTab {
-                        case .pmc:
-                            pmcContent
-                        case .wellness:
-                            wellnessContent
-                        case .load:
-                            loadContent
+                    // Compact PMC Chart with expand button
+                    compactPMCCard
+
+                    // Training/Wellness segment toggle
+                    Picker("View", selection: $selectedSegment) {
+                        ForEach(PerformanceSegment.allCases, id: \.self) { segment in
+                            Text(segment.rawValue).tag(segment)
                         }
                     }
-                    .padding(Layout.screenPadding)
+                    .pickerStyle(.segmented)
+
+                    // Content based on selected segment
+                    switch selectedSegment {
+                    case .training:
+                        trainingContent
+                    case .wellness:
+                        wellnessContent
+                    }
                 }
+                .padding(Layout.screenPadding)
             }
             .background(Color.backgroundPrimary)
             .navigationTitle("Performance")
             .toolbarBackground(Color.backgroundPrimary, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .preferredColorScheme(.dark)
+            .sheet(isPresented: $showingFullPMC) {
+                fullPMCSheet
+            }
+            .sheet(item: $selectedWorkout) { workout in
+                WorkoutDetailView(workout: workout)
+            }
         }
     }
 
-    // MARK: - PMC Content
+    // MARK: - ACWR Warning Banner
 
     @ViewBuilder
-    private var pmcContent: some View {
-        VStack(spacing: 16) {
-            // Main PMC Chart
-            PMCChart(data: pmcData, selectedDateRange: $selectedDateRange)
-                .frame(height: 350)
+    private var acwrWarningBanner: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: IconSize.medium))
+                .foregroundStyle(acwrStatus == .highRisk ? Color.statusLow : Color.statusModerate)
 
-            // Current metrics summary
-            currentMetricsSummary
+            VStack(alignment: .leading, spacing: Spacing.xxxs) {
+                Text(acwrStatus == .highRisk ? "Injury Risk Warning" : "Training Load Notice")
+                    .font(AppFont.labelMedium)
+                    .foregroundStyle(Color.textPrimary)
 
-            // Training zones
-            trainingZoneSummary
+                if let ratio = acwr {
+                    Text("ACWR \(String(format: "%.2f", ratio)) - \(acwrStatusMessage)")
+                        .font(AppFont.captionLarge)
+                        .foregroundStyle(Color.textSecondary)
+                }
+            }
+
+            Spacer()
         }
+        .padding(Spacing.md)
+        .background(
+            (acwrStatus == .highRisk ? Color.statusLow : Color.statusModerate).opacity(0.15)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.medium)
+                .stroke((acwrStatus == .highRisk ? Color.statusLow : Color.statusModerate).opacity(0.3), lineWidth: 1)
+        )
     }
 
+    private var acwrStatusMessage: String {
+        guard let ratio = acwr else { return "Unknown" }
+        if ratio < 0.8 {
+            return "Training load is low - consider increasing activity"
+        } else if ratio > 1.5 {
+            return "High training spike - injury risk elevated"
+        } else if ratio > 1.3 {
+            return "Training load increasing rapidly"
+        }
+        return "Within optimal range"
+    }
+
+    // MARK: - Compact PMC Card
+
     @ViewBuilder
-    private var currentMetricsSummary: some View {
-        if let latest = allMetrics.last {
-            VStack(alignment: .leading, spacing: Spacing.sm) {
-                Text("Current Status".uppercased())
+    private var compactPMCCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            // Header with expand button
+            HStack {
+                Text("PMC Trend".uppercased())
                     .font(AppFont.labelSmall)
                     .foregroundStyle(Color.textTertiary)
                     .tracking(0.5)
 
-                HStack(spacing: Spacing.md) {
-                    MetricBox(
-                        title: "Fitness (CTL)",
-                        value: String(format: "%.0f", latest.ctl),
-                        subtitle: latest.fitnessStatus,
-                        color: .chartFitness
-                    )
+                Spacer()
 
-                    MetricBox(
-                        title: "Fatigue (ATL)",
-                        value: String(format: "%.0f", latest.atl),
-                        subtitle: acwrStatus(ctl: latest.ctl, atl: latest.atl),
-                        color: .chartFatigue
-                    )
-
-                    MetricBox(
-                        title: "Form (TSB)",
-                        value: String(format: "%+.0f", latest.tsb),
-                        subtitle: latest.formStatus,
-                        color: formColor(latest.tsb)
-                    )
+                // Time range selector
+                HStack(spacing: Spacing.xxs) {
+                    ForEach([ChartDateRange.week, .month, .quarter], id: \.self) { range in
+                        Button {
+                            withAnimation(AppAnimation.springSnappy) {
+                                selectedDateRange = range
+                            }
+                        } label: {
+                            Text(range.shortLabel)
+                                .font(AppFont.captionSmall)
+                                .padding(.horizontal, Spacing.xs)
+                                .padding(.vertical, Spacing.xxs)
+                                .background(selectedDateRange == range ? Color.accentPrimary : Color.backgroundTertiary)
+                                .foregroundStyle(selectedDateRange == range ? .white : Color.textSecondary)
+                                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
-                // ACWR indicator
-                ACWRIndicator(ctl: latest.ctl, atl: latest.atl)
+                Button {
+                    showingFullPMC = true
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: IconSize.small))
+                        .foregroundStyle(Color.textSecondary)
+                        .padding(Spacing.xs)
+                        .background(Color.backgroundTertiary)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
             }
-            .padding(Spacing.md)
-            .cardBackground()
+
+            // Compact chart
+            CompactPMCChart(data: pmcData, selectedDateRange: selectedDateRange)
+                .frame(height: 120)
+
+            // Inline legend with current values
+            if let latest = latestMetrics {
+                HStack(spacing: Spacing.md) {
+                    MetricLegendItem(
+                        color: .chartFitness,
+                        label: "Fitness",
+                        value: String(format: "%.0f", latest.ctl)
+                    )
+                    MetricLegendItem(
+                        color: .chartFatigue,
+                        label: "Fatigue",
+                        value: String(format: "%.0f", latest.atl)
+                    )
+                    MetricLegendItem(
+                        color: Color.forTSB(latest.tsb),
+                        label: "Form",
+                        value: String(format: "%+.0f", latest.tsb)
+                    )
+                }
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
+    }
+
+    // MARK: - Training Content
+
+    @ViewBuilder
+    private var trainingContent: some View {
+        VStack(spacing: Spacing.lg) {
+            // Recent Workouts Card
+            workoutsCard
         }
     }
 
+    // MARK: - Workouts Card
+
     @ViewBuilder
-    private var trainingZoneSummary: some View {
+    private var workoutsCard: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Optimal Training Zone".uppercased())
-                .font(AppFont.labelSmall)
-                .foregroundStyle(Color.textTertiary)
-                .tracking(0.5)
+            // Header
+            HStack {
+                Text("Workouts".uppercased())
+                    .font(AppFont.labelSmall)
+                    .foregroundStyle(Color.textTertiary)
+                    .tracking(0.5)
 
-            Text("Based on your current form of \(String(format: "%+.0f", allMetrics.last?.tsb ?? 0)) TSB:")
-                .font(AppFont.bodyMedium)
-                .foregroundStyle(Color.textSecondary)
+                Spacer()
 
-            let recommendation = PMCCalculator.trainingRecommendation(tsb: allMetrics.last?.tsb ?? 0)
-
-            HStack(spacing: Spacing.xs) {
-                Circle()
-                    .fill(statusColor(recommendation.status))
-                    .frame(width: 12, height: 12)
-
-                Text(recommendation.recommendation)
-                    .font(AppFont.bodyMedium)
-                    .foregroundStyle(Color.textPrimary)
+                NavigationLink(destination: WorkoutsListView()) {
+                    HStack(spacing: Spacing.xxs) {
+                        Text("See All")
+                            .font(AppFont.labelSmall)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: IconSize.tiny))
+                    }
+                    .foregroundStyle(Color.accentPrimary)
+                }
             }
 
-            HStack(spacing: Spacing.xs) {
-                Text("Suggested TSS:")
-                    .font(AppFont.captionLarge)
-                    .foregroundStyle(Color.textTertiary)
-                Text("\(Int(recommendation.suggestedTSS.lowerBound)) - \(Int(recommendation.suggestedTSS.upperBound))")
-                    .font(AppFont.labelMedium)
-                    .foregroundStyle(Color.accentPrimary)
+            if recentWorkouts.isEmpty {
+                // Empty state
+                VStack(spacing: Spacing.sm) {
+                    Image(systemName: "figure.run")
+                        .font(.system(size: IconSize.extraLarge))
+                        .foregroundStyle(Color.textTertiary)
+                    Text("No workouts yet")
+                        .font(AppFont.bodyMedium)
+                        .foregroundStyle(Color.textSecondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Spacing.xl)
+            } else {
+                // Workout list
+                VStack(spacing: Spacing.xs) {
+                    ForEach(recentWorkouts) { workout in
+                        CompactWorkoutRow(workout: workout)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedWorkout = workout
+                            }
+
+                        if workout.id != recentWorkouts.last?.id {
+                            Divider()
+                                .background(Color.backgroundTertiary)
+                        }
+                    }
+                }
             }
         }
         .padding(Spacing.md)
@@ -163,578 +291,594 @@ struct PerformanceView: View {
 
     @ViewBuilder
     private var wellnessContent: some View {
-        VStack(spacing: 16) {
-            // HRV Trend Chart
-            WellnessMetricChart(
-                title: "HRV Trend",
-                data: allMetrics.compactMap { m in
-                    guard let hrv = m.hrvRMSSD else { return nil }
-                    return (m.date, hrv)
-                },
-                dateRange: selectedDateRange,
-                unit: "ms",
-                color: .blue,
-                higherIsBetter: true
-            )
+        VStack(spacing: Spacing.lg) {
+            // HRV Trend Card
+            hrvTrendCard
 
-            // Resting HR Trend
-            WellnessMetricChart(
-                title: "Resting Heart Rate",
-                data: allMetrics.compactMap { m in
-                    guard let rhr = m.restingHR else { return nil }
-                    return (m.date, Double(rhr))
-                },
-                dateRange: selectedDateRange,
-                unit: "bpm",
-                color: .red,
-                higherIsBetter: false
-            )
+            // Sleep Trend Card
+            sleepTrendCard
 
-            // Sleep Trend
-            SleepTrendChart(
-                data: allMetrics.compactMap { m in
-                    guard let hours = m.sleepHours else { return nil }
-                    return (m.date, hours, m.sleepQuality ?? 0.5)
-                },
-                dateRange: selectedDateRange
-            )
+            // Resting HR Card
+            restingHRCard
         }
     }
-
-    // MARK: - Load Content
 
     @ViewBuilder
-    private var loadContent: some View {
-        VStack(spacing: 16) {
-            // Weekly TSS by activity
-            WeeklyLoadChart(workouts: workouts, dateRange: selectedDateRange)
-
-            // Training distribution
-            TrainingDistributionCard(workouts: workouts, dateRange: selectedDateRange)
-
-            // Monotony and strain
-            MonotonyStrainCard(metrics: allMetrics)
+    private var hrvTrendCard: some View {
+        let hrvData = allMetrics.suffix(30).compactMap { m -> (Date, Double)? in
+            guard let hrv = m.hrvRMSSD else { return nil }
+            return (m.date, hrv)
         }
+
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack {
+                Text("HRV Trend".uppercased())
+                    .font(AppFont.labelSmall)
+                    .foregroundStyle(Color.textTertiary)
+                    .tracking(0.5)
+
+                Spacer()
+
+                if let latest = hrvData.last {
+                    Text("\(Int(latest.1)) ms")
+                        .font(AppFont.labelMedium)
+                        .foregroundStyle(Color.accentPrimary)
+                }
+            }
+
+            if hrvData.isEmpty {
+                emptyMetricState(icon: "waveform.path.ecg", message: "No HRV data")
+            } else {
+                CompactTrendChart(
+                    data: hrvData,
+                    color: .chartFitness,
+                    showBaseline: true
+                )
+                .frame(height: 80)
+
+                // 7-day average
+                let sevenDayAvg = hrvData.suffix(7).map(\.1).reduce(0, +) / Double(max(1, min(7, hrvData.count)))
+                HStack {
+                    Text("7-day avg:")
+                        .font(AppFont.captionLarge)
+                        .foregroundStyle(Color.textTertiary)
+                    Text("\(Int(sevenDayAvg)) ms")
+                        .font(AppFont.labelSmall)
+                        .foregroundStyle(Color.textSecondary)
+
+                    if let latest = hrvData.last {
+                        Spacer()
+                        Text("Today:")
+                            .font(AppFont.captionLarge)
+                            .foregroundStyle(Color.textTertiary)
+                        Text("\(Int(latest.1)) ms")
+                            .font(AppFont.labelSmall)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
     }
 
-    // MARK: - Helper Methods
-
-    private func acwrStatus(ctl: Double, atl: Double) -> String {
-        guard ctl > 0 else { return "N/A" }
-        let acwr = atl / ctl
-        switch acwr {
-        case 0.8...1.3: return "Optimal"
-        case 0.5..<0.8: return "Low"
-        case 1.3..<1.5: return "Caution"
-        default: return "High Risk"
+    @ViewBuilder
+    private var sleepTrendCard: some View {
+        let sleepData = allMetrics.suffix(14).compactMap { m -> (Date, Double)? in
+            guard let hours = m.sleepHours else { return nil }
+            return (m.date, hours)
         }
+
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack {
+                Text("Sleep Quality".uppercased())
+                    .font(AppFont.labelSmall)
+                    .foregroundStyle(Color.textTertiary)
+                    .tracking(0.5)
+
+                Spacer()
+
+                if let latest = sleepData.last {
+                    Text(formatSleepDuration(latest.1))
+                        .font(AppFont.labelMedium)
+                        .foregroundStyle(Color.accentPrimary)
+                }
+            }
+
+            if sleepData.isEmpty {
+                emptyMetricState(icon: "moon.fill", message: "No sleep data")
+            } else {
+                SleepBarChart(data: sleepData)
+                    .frame(height: 80)
+
+                // 7-day average
+                let sevenDayAvg = sleepData.suffix(7).map(\.1).reduce(0, +) / Double(max(1, min(7, sleepData.count)))
+                HStack {
+                    Text("7-day avg:")
+                        .font(AppFont.captionLarge)
+                        .foregroundStyle(Color.textTertiary)
+                    Text(formatSleepDuration(sevenDayAvg))
+                        .font(AppFont.labelSmall)
+                        .foregroundStyle(Color.textSecondary)
+
+                    if let latest = sleepData.last {
+                        Spacer()
+                        Text("Last:")
+                            .font(AppFont.captionLarge)
+                            .foregroundStyle(Color.textTertiary)
+                        Text(formatSleepDuration(latest.1))
+                            .font(AppFont.labelSmall)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                }
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
     }
 
-    private func formColor(_ tsb: Double) -> Color {
-        Color.forTSB(tsb)
+    @ViewBuilder
+    private var restingHRCard: some View {
+        let rhrData = allMetrics.suffix(7).compactMap { m -> (Date, Int)? in
+            guard let rhr = m.restingHR else { return nil }
+            return (m.date, rhr)
+        }
+
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack {
+                Text("Resting Heart Rate".uppercased())
+                    .font(AppFont.labelSmall)
+                    .foregroundStyle(Color.textTertiary)
+                    .tracking(0.5)
+
+                Spacer()
+
+                if let latest = rhrData.last {
+                    Text("\(latest.1) bpm")
+                        .font(AppFont.labelMedium)
+                        .foregroundStyle(Color.accentPrimary)
+                }
+            }
+
+            if rhrData.isEmpty {
+                emptyMetricState(icon: "heart.fill", message: "No resting HR data")
+            } else {
+                let avgRHR = rhrData.map(\.1).reduce(0, +) / max(1, rhrData.count)
+
+                HStack(spacing: Spacing.lg) {
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                        Text("Current")
+                            .font(AppFont.captionSmall)
+                            .foregroundStyle(Color.textTertiary)
+                        if let latest = rhrData.last {
+                            HStack(alignment: .firstTextBaseline, spacing: Spacing.xxs) {
+                                Text("\(latest.1)")
+                                    .font(AppFont.metricMedium)
+                                    .foregroundStyle(Color.textPrimary)
+                                Text("bpm")
+                                    .font(AppFont.captionLarge)
+                                    .foregroundStyle(Color.textTertiary)
+                            }
+                        }
+                    }
+
+                    Divider()
+                        .frame(height: 40)
+
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                        Text("7-day avg")
+                            .font(AppFont.captionSmall)
+                            .foregroundStyle(Color.textTertiary)
+                        HStack(alignment: .firstTextBaseline, spacing: Spacing.xxs) {
+                            Text("\(avgRHR)")
+                                .font(AppFont.metricMedium)
+                                .foregroundStyle(Color.textPrimary)
+                            Text("bpm")
+                                .font(AppFont.captionLarge)
+                                .foregroundStyle(Color.textTertiary)
+                        }
+                    }
+
+                    if let latest = rhrData.last {
+                        Spacer()
+                        let diff = latest.1 - avgRHR
+                        VStack(alignment: .trailing, spacing: Spacing.xxs) {
+                            Text("vs avg")
+                                .font(AppFont.captionSmall)
+                                .foregroundStyle(Color.textTertiary)
+                            Text("\(diff >= 0 ? "+" : "")\(diff)")
+                                .font(AppFont.labelMedium)
+                                .foregroundStyle(diff <= 0 ? Color.statusOptimal : (diff <= 3 ? Color.statusModerate : Color.statusLow))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(Spacing.md)
+        .cardBackground()
     }
 
-    private func statusColor(_ status: TSBStatus) -> Color {
-        switch status {
-        case .veryFresh: return .statusExcellent
-        case .fresh: return .statusGood
-        case .neutral: return .chartFitness
-        case .tired: return .statusModerate
-        case .veryTired: return .statusLow
+    @ViewBuilder
+    private func emptyMetricState(icon: String, message: String) -> some View {
+        VStack(spacing: Spacing.xs) {
+            Image(systemName: icon)
+                .font(.system(size: IconSize.large))
+                .foregroundStyle(Color.textTertiary)
+            Text(message)
+                .font(AppFont.captionLarge)
+                .foregroundStyle(Color.textTertiary)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Spacing.lg)
+    }
+
+    private func formatSleepDuration(_ hours: Double) -> String {
+        let h = Int(hours)
+        let m = Int((hours - Double(h)) * 60)
+        return "\(h)h \(m)m"
+    }
+
+    // MARK: - Full PMC Sheet
+
+    @ViewBuilder
+    private var fullPMCSheet: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Time range picker
+                Picker("Range", selection: $selectedDateRange) {
+                    ForEach(ChartDateRange.allCases, id: \.self) { range in
+                        Text(range.rawValue).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(Spacing.md)
+
+                // Full PMC Chart
+                PMCChart(data: pmcData, selectedDateRange: $selectedDateRange)
+                    .padding(.horizontal, Spacing.md)
+
+                Spacer()
+
+                // Current values summary
+                if let latest = latestMetrics {
+                    VStack(spacing: Spacing.sm) {
+                        HStack(spacing: Spacing.xl) {
+                            VStack(spacing: Spacing.xxs) {
+                                Text("Fitness (CTL)")
+                                    .font(AppFont.captionLarge)
+                                    .foregroundStyle(Color.textTertiary)
+                                Text(String(format: "%.0f", latest.ctl))
+                                    .font(AppFont.metricLarge)
+                                    .foregroundStyle(Color.chartFitness)
+                            }
+
+                            VStack(spacing: Spacing.xxs) {
+                                Text("Fatigue (ATL)")
+                                    .font(AppFont.captionLarge)
+                                    .foregroundStyle(Color.textTertiary)
+                                Text(String(format: "%.0f", latest.atl))
+                                    .font(AppFont.metricLarge)
+                                    .foregroundStyle(Color.chartFatigue)
+                            }
+
+                            VStack(spacing: Spacing.xxs) {
+                                Text("Form (TSB)")
+                                    .font(AppFont.captionLarge)
+                                    .foregroundStyle(Color.textTertiary)
+                                Text(String(format: "%+.0f", latest.tsb))
+                                    .font(AppFont.metricLarge)
+                                    .foregroundStyle(Color.forTSB(latest.tsb))
+                            }
+                        }
+
+                        Text(latest.formStatus + " (\(PMCCalculator.trainingRecommendation(tsb: latest.tsb).status.rawValue))")
+                            .font(AppFont.bodyMedium)
+                            .foregroundStyle(Color.textSecondary)
+                    }
+                    .padding(Spacing.lg)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.backgroundSecondary)
+                }
+            }
+            .background(Color.backgroundPrimary)
+            .navigationTitle("PMC Chart")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        showingFullPMC = false
+                    }
+                }
+            }
+            .toolbarBackground(Color.backgroundPrimary, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+        .presentationDetents([.large])
+        .preferredColorScheme(.dark)
     }
 }
 
 // MARK: - Supporting Views
 
-struct MetricBox: View {
-    let title: String
-    let value: String
-    let subtitle: String
-    let color: Color
+/// Compact PMC chart for inline display
+struct CompactPMCChart: View {
+    let data: [PMCDataPoint]
+    let selectedDateRange: ChartDateRange
 
-    var body: some View {
-        VStack(spacing: Spacing.xxs) {
-            Text(title)
-                .font(AppFont.captionSmall)
-                .foregroundStyle(Color.textTertiary)
-
-            Text(value)
-                .font(AppFont.metricMedium)
-                .foregroundStyle(color)
-
-            Text(subtitle)
-                .font(AppFont.captionSmall)
-                .foregroundStyle(Color.textTertiary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-struct ACWRIndicator: View {
-    let ctl: Double
-    let atl: Double
-
-    private var acwr: Double? {
-        guard ctl > 0 else { return nil }
-        return atl / ctl
-    }
-
-    private var status: ACWRStatus {
-        PMCCalculator.analyzeACWR(acwr)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Acute:Chronic Workload Ratio")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack {
-                // Gauge
-                ZStack {
-                    // Background track
-                    Capsule()
-                        .fill(Color.gray.opacity(0.2))
-                        .frame(height: 8)
-
-                    // Optimal zone
-                    GeometryReader { geo in
-                        Capsule()
-                            .fill(Color.green.opacity(0.3))
-                            .frame(width: geo.size.width * 0.25)
-                            .offset(x: geo.size.width * 0.35)
-                    }
-                    .frame(height: 8)
-
-                    // Current position
-                    GeometryReader { geo in
-                        if let ratio = acwr {
-                            let position = max(0, min(1, ratio / 2)) // Scale 0-2 to 0-1
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 12, height: 12)
-                                .offset(x: geo.size.width * position - 6)
-                        }
-                    }
-                    .frame(height: 12)
-                }
-
-                if let ratio = acwr {
-                    Text(String(format: "%.2f", ratio))
-                        .font(.headline)
-                        .foregroundStyle(statusColor)
-                }
-            }
-
-            // Labels
-            HStack {
-                Text("0")
-                Spacer()
-                Text("0.8-1.3 Optimal")
-                Spacer()
-                Text("2.0+")
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        }
-        .padding()
-        .background(statusColor.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var statusColor: Color {
-        switch status {
-        case .optimal: return .green
-        case .undertraining: return .blue
-        case .caution: return .orange
-        case .highRisk: return .red
-        case .veryLow, .unknown: return .gray
-        }
-    }
-}
-
-struct WellnessMetricChart: View {
-    let title: String
-    let data: [(Date, Double)]
-    let dateRange: ChartDateRange
-    let unit: String
-    let color: Color
-    let higherIsBetter: Bool
-
-    private var filteredData: [(Date, Double)] {
-        guard let days = dateRange.days else { return data }
-        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
-        return data.filter { $0.0 >= cutoff }
-    }
-
-    private var baseline: Double {
-        guard !filteredData.isEmpty else { return 0 }
-        return filteredData.map(\.1).reduce(0, +) / Double(filteredData.count)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(title)
-                    .font(.headline)
-
-                Spacer()
-
-                if let latest = filteredData.last {
-                    Text("\(Int(latest.1)) \(unit)")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(color)
-                }
-            }
-
-            Chart {
-                // Baseline
-                RuleMark(y: .value("Baseline", baseline))
-                    .foregroundStyle(.gray.opacity(0.3))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-
-                // Data line
-                ForEach(filteredData, id: \.0) { point in
-                    LineMark(
-                        x: .value("Date", point.0),
-                        y: .value("Value", point.1)
-                    )
-                    .foregroundStyle(color)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
-                }
-
-                // Points
-                ForEach(filteredData, id: \.0) { point in
-                    PointMark(
-                        x: .value("Date", point.0),
-                        y: .value("Value", point.1)
-                    )
-                    .foregroundStyle(pointColor(point.1))
-                    .symbolSize(20)
-                }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic) { _ in
-                    AxisValueLabel(format: .dateTime.day())
-                        .font(.caption2)
-                }
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading)
-            }
-            .frame(height: 150)
-        }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func pointColor(_ value: Double) -> Color {
-        let deviation = (value - baseline) / baseline
-        if higherIsBetter {
-            if deviation > 0.1 { return .green }
-            if deviation < -0.1 { return .red }
-        } else {
-            if deviation > 0.1 { return .red }
-            if deviation < -0.1 { return .green }
-        }
-        return color
-    }
-}
-
-struct SleepTrendChart: View {
-    let data: [(date: Date, hours: Double, quality: Double)]
-    let dateRange: ChartDateRange
-
-    private var filteredData: [(date: Date, hours: Double, quality: Double)] {
-        guard let days = dateRange.days else { return data }
+    private var filteredData: [PMCDataPoint] {
+        guard let days = selectedDateRange.days else { return data }
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
         return data.filter { $0.date >= cutoff }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Sleep")
-                .font(.headline)
+    private var yAxisDomain: ClosedRange<Double> {
+        guard !filteredData.isEmpty else { return 0...100 }
+        let allValues = filteredData.flatMap { [$0.ctl, $0.atl] }
+        guard let minVal = allValues.min(), let maxVal = allValues.max() else { return 0...100 }
+        let padding = (maxVal - minVal) * 0.15
+        return (minVal - padding)...(maxVal + padding)
+    }
 
-            Chart {
-                // Target zone
-                RectangleMark(
-                    xStart: .value("Start", filteredData.first?.date ?? Date()),
-                    xEnd: .value("End", filteredData.last?.date ?? Date()),
-                    yStart: .value("Low", 7),
-                    yEnd: .value("High", 9)
+    var body: some View {
+        Chart {
+            // CTL (Fitness) area
+            ForEach(filteredData) { point in
+                AreaMark(
+                    x: .value("Date", point.date),
+                    yStart: .value("Base", yAxisDomain.lowerBound),
+                    yEnd: .value("CTL", point.ctl)
                 )
-                .foregroundStyle(.green.opacity(0.1))
-
-                ForEach(filteredData, id: \.date) { point in
-                    BarMark(
-                        x: .value("Date", point.date, unit: .day),
-                        y: .value("Hours", point.hours)
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color.chartFitness.opacity(0.2), Color.chartFitness.opacity(0)],
+                        startPoint: .top,
+                        endPoint: .bottom
                     )
-                    .foregroundStyle(sleepColor(point.hours, quality: point.quality))
-                    .cornerRadius(4)
-                }
+                )
+                .interpolationMethod(.catmullRom)
             }
-            .chartYScale(domain: 0...12)
-            .chartXAxis {
-                AxisMarks(values: .stride(by: .day)) { _ in
-                    AxisValueLabel(format: .dateTime.weekday(.abbreviated))
-                        .font(.caption2)
-                }
+
+            // CTL line
+            ForEach(filteredData) { point in
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("CTL", point.ctl),
+                    series: .value("Metric", "Fitness")
+                )
+                .foregroundStyle(Color.chartFitness)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .interpolationMethod(.catmullRom)
             }
-            .frame(height: 150)
-        }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
 
-    private func sleepColor(_ hours: Double, quality: Double) -> Color {
-        if hours >= 7 && quality >= 0.7 {
-            return .green
-        } else if hours >= 6 && quality >= 0.5 {
-            return .blue
-        } else if hours >= 5 {
-            return .orange
-        }
-        return .red
-    }
-}
-
-struct WeeklyLoadChart: View {
-    let workouts: [WorkoutRecord]
-    let dateRange: ChartDateRange
-
-    private var weeklyData: [(week: Date, tss: Double, category: ActivityCategory)] {
-        let calendar = Calendar.current
-        var result: [(Date, Double, ActivityCategory)] = []
-
-        guard let days = dateRange.days else { return result }
-        let cutoff = calendar.date(byAdding: .day, value: -days, to: Date())!
-
-        let filtered = workouts.filter { $0.startDate >= cutoff }
-        let grouped = Dictionary(grouping: filtered) { workout in
-            calendar.startOfWeek(for: workout.startDate)
-        }
-
-        for (week, weekWorkouts) in grouped {
-            for category in ActivityCategory.allCases {
-                let categoryTSS = weekWorkouts
-                    .filter { $0.activityCategory == category }
-                    .reduce(0) { $0 + $1.tss }
-                if categoryTSS > 0 {
-                    result.append((week, categoryTSS, category))
-                }
-            }
-        }
-
-        return result.sorted { $0.0 < $1.0 }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Weekly Training Load")
-                .font(.headline)
-
-            Chart {
-                ForEach(weeklyData, id: \.week) { item in
-                    BarMark(
-                        x: .value("Week", item.week, unit: .weekOfYear),
-                        y: .value("TSS", item.tss)
+            // ATL (Fatigue) area
+            ForEach(filteredData) { point in
+                AreaMark(
+                    x: .value("Date", point.date),
+                    yStart: .value("Base", yAxisDomain.lowerBound),
+                    yEnd: .value("ATL", point.atl)
+                )
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color.chartFatigue.opacity(0.15), Color.chartFatigue.opacity(0)],
+                        startPoint: .top,
+                        endPoint: .bottom
                     )
-                    .foregroundStyle(by: .value("Activity", item.category.rawValue))
-                }
+                )
+                .interpolationMethod(.catmullRom)
             }
-            .chartForegroundStyleScale([
-                "Run": Color.orange,
-                "Bike": Color.blue,
-                "Swim": Color.cyan,
-                "Strength": Color.purple,
-                "Other": Color.gray
-            ])
-            .frame(height: 200)
+
+            // ATL line
+            ForEach(filteredData) { point in
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("ATL", point.atl),
+                    series: .value("Metric", "Fatigue")
+                )
+                .foregroundStyle(Color.chartFatigue)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .interpolationMethod(.catmullRom)
+            }
         }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .chartYScale(domain: yAxisDomain)
     }
 }
 
-struct TrainingDistributionCard: View {
-    let workouts: [WorkoutRecord]
-    let dateRange: ChartDateRange
+/// Metric legend item with colored dot
+struct MetricLegendItem: View {
+    let color: Color
+    let label: String
+    let value: String
 
-    private var distribution: [(category: ActivityCategory, percentage: Double, tss: Double)] {
-        guard let days = dateRange.days else { return [] }
-        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
-        let filtered = workouts.filter { $0.startDate >= cutoff }
+    var body: some View {
+        HStack(spacing: Spacing.xxs) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+            Text(label)
+                .font(AppFont.captionSmall)
+                .foregroundStyle(Color.textTertiary)
+            Text(value)
+                .font(AppFont.labelSmall)
+                .foregroundStyle(Color.textPrimary)
+        }
+    }
+}
 
-        let totalTSS = filtered.reduce(0) { $0 + $1.tss }
-        guard totalTSS > 0 else { return [] }
+/// Compact workout row for performance view
+struct CompactWorkoutRow: View {
+    let workout: WorkoutRecord
 
-        return ActivityCategory.allCases.compactMap { category in
-            let categoryTSS = filtered.filter { $0.activityCategory == category }.reduce(0) { $0 + $1.tss }
-            guard categoryTSS > 0 else { return nil }
-            return (category, categoryTSS / totalTSS, categoryTSS)
-        }.sorted { $0.percentage > $1.percentage }
+    var body: some View {
+        HStack(spacing: Spacing.sm) {
+            // Activity icon
+            Image(systemName: workout.activityIcon)
+                .font(.system(size: IconSize.medium))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(workout.activityCategory.themeColor)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small))
+
+            // Info
+            VStack(alignment: .leading, spacing: Spacing.xxxs) {
+                Text(workout.title ?? workout.activityType)
+                    .font(AppFont.bodyMedium)
+                    .foregroundStyle(Color.textPrimary)
+                    .lineLimit(1)
+
+                HStack(spacing: Spacing.xs) {
+                    Text(workout.durationFormatted)
+                        .font(AppFont.captionSmall)
+                        .foregroundStyle(Color.textTertiary)
+                    if let distance = workout.distanceFormatted {
+                        Text("•")
+                            .font(AppFont.captionSmall)
+                            .foregroundStyle(Color.textTertiary)
+                        Text(distance)
+                            .font(AppFont.captionSmall)
+                            .foregroundStyle(Color.textTertiary)
+                    }
+                }
+            }
+
+            Spacer()
+
+            // TSS and date
+            VStack(alignment: .trailing, spacing: Spacing.xxxs) {
+                HStack(spacing: Spacing.xxs) {
+                    Text(String(format: "%.0f", workout.tss))
+                        .font(AppFont.labelMedium)
+                        .foregroundStyle(Color.textPrimary)
+                    Text("TSS")
+                        .font(AppFont.captionSmall)
+                        .foregroundStyle(Color.textTertiary)
+                }
+
+                Text(workout.relativeDateString)
+                    .font(AppFont.captionSmall)
+                    .foregroundStyle(Color.textTertiary)
+            }
+        }
+        .padding(.vertical, Spacing.xxs)
+    }
+}
+
+/// Compact trend chart for wellness metrics
+struct CompactTrendChart: View {
+    let data: [(Date, Double)]
+    let color: Color
+    let showBaseline: Bool
+
+    private var baseline: Double {
+        guard !data.isEmpty else { return 0 }
+        return data.map(\.1).reduce(0, +) / Double(data.count)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Training Distribution")
-                .font(.headline)
+        Chart {
+            if showBaseline {
+                RuleMark(y: .value("Baseline", baseline))
+                    .foregroundStyle(Color.textTertiary.opacity(0.3))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            }
 
-            ForEach(distribution, id: \.category) { item in
-                HStack {
-                    Image(systemName: item.category.icon)
-                        .frame(width: 24)
+            ForEach(data, id: \.0) { point in
+                AreaMark(
+                    x: .value("Date", point.0),
+                    y: .value("Value", point.1)
+                )
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [color.opacity(0.2), color.opacity(0)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .interpolationMethod(.catmullRom)
+            }
 
-                    Text(item.category.rawValue)
-                        .font(.subheadline)
-
-                    Spacer()
-
-                    Text(String(format: "%.0f%%", item.percentage * 100))
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-
-                    Text(String(format: "%.0f TSS", item.tss))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Progress bar
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.gray.opacity(0.2))
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(categoryColor(item.category))
-                            .frame(width: geo.size.width * item.percentage)
-                    }
-                }
-                .frame(height: 4)
+            ForEach(data, id: \.0) { point in
+                LineMark(
+                    x: .value("Date", point.0),
+                    y: .value("Value", point.1)
+                )
+                .foregroundStyle(color)
+                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                .interpolationMethod(.catmullRom)
             }
         }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+    }
+}
+
+/// Sleep bar chart showing nightly sleep
+struct SleepBarChart: View {
+    let data: [(Date, Double)]
+
+    var body: some View {
+        Chart {
+            // Target zone (7-9 hours)
+            RectangleMark(
+                xStart: .value("Start", data.first?.0 ?? Date()),
+                xEnd: .value("End", data.last?.0 ?? Date()),
+                yStart: .value("Low", 7),
+                yEnd: .value("High", 9)
+            )
+            .foregroundStyle(Color.statusOptimal.opacity(0.1))
+
+            ForEach(data, id: \.0) { point in
+                BarMark(
+                    x: .value("Date", point.0, unit: .day),
+                    y: .value("Hours", point.1)
+                )
+                .foregroundStyle(sleepColor(point.1))
+                .cornerRadius(3)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: 0...12)
     }
 
-    private func categoryColor(_ category: ActivityCategory) -> Color {
-        switch category {
-        case .run: return .orange
-        case .bike: return .blue
-        case .swim: return .cyan
-        case .strength: return .purple
-        case .other: return .gray
+    private func sleepColor(_ hours: Double) -> Color {
+        switch hours {
+        case 7...9: return .statusOptimal
+        case 6..<7, 9..<10: return .accentSecondary
+        default: return .statusModerate
         }
     }
 }
 
-struct MonotonyStrainCard: View {
-    let metrics: [DailyMetrics]
+// MARK: - Date Range Extension
 
-    private var weeklyTSS: [Double] {
+extension ChartDateRange {
+    var shortLabel: String {
+        switch self {
+        case .week: return "7D"
+        case .month: return "30D"
+        case .quarter: return "90D"
+        case .year: return "1Y"
+        case .all: return "All"
+        }
+    }
+}
+
+// MARK: - Workout Record Extension
+
+extension WorkoutRecord {
+    var relativeDateString: String {
         let calendar = Calendar.current
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: Date())!
-        return metrics
-            .filter { $0.date >= weekAgo }
-            .sorted { $0.date < $1.date }
-            .map { $0.totalTSS }
-    }
-
-    private var monotony: Double? {
-        PMCCalculator.calculateMonotony(weeklyTSS: weeklyTSS)
-    }
-
-    private var strain: Double? {
-        PMCCalculator.calculateStrain(weeklyTSS: weeklyTSS)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Training Stress")
-                .font(.headline)
-
-            HStack(spacing: 20) {
-                VStack(spacing: 4) {
-                    Text("Monotony")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let m = monotony {
-                        Text(String(format: "%.1f", m))
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .foregroundStyle(monotonyColor(m))
-                    } else {
-                        Text("--")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text(monotonyStatus)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                VStack(spacing: 4) {
-                    Text("Strain")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let s = strain {
-                        Text(String(format: "%.0f", s))
-                            .font(.title2)
-                            .fontWeight(.bold)
-                    } else {
-                        Text("--")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text("Weekly load × monotony")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            if let m = monotony, m > 2.0 {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text("High monotony with high strain increases injury risk")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func monotonyColor(_ value: Double) -> Color {
-        switch value {
-        case ...1.5: return .green
-        case 1.5..<2.0: return .orange
-        default: return .red
-        }
-    }
-
-    private var monotonyStatus: String {
-        guard let m = monotony else { return "Insufficient data" }
-        switch m {
-        case ...1.5: return "Good variety"
-        case 1.5..<2.0: return "Moderate"
-        default: return "High - add variety"
+        if calendar.isDateInToday(startDate) {
+            return "Today"
+        } else if calendar.isDateInYesterday(startDate) {
+            return "Yesterday"
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MMM d"
+            return formatter.string(from: startDate)
         }
     }
 }
