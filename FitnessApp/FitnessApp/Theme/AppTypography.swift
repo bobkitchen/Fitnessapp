@@ -3,25 +3,36 @@ import SwiftUI
 // MARK: - App Typography System
 
 /// Typography definitions using SF Pro and SF Pro Rounded
+/// All fonts support Dynamic Type scaling for accessibility
 enum AppFont {
     // MARK: - Display Fonts (SF Pro Rounded for warmth)
 
-    /// Large display text - 56pt bold rounded
-    static let displayLarge = Font.system(size: 56, weight: .bold, design: .rounded)
+    /// Large display text - 56pt bold rounded, scales with Dynamic Type
+    static var displayLarge: Font {
+        Font.system(size: 56, weight: .bold, design: .rounded)
+    }
 
-    /// Medium display text - 44pt bold rounded
-    static let displayMedium = Font.system(size: 44, weight: .bold, design: .rounded)
+    /// Medium display text - 44pt bold rounded, scales with Dynamic Type
+    static var displayMedium: Font {
+        Font.system(size: 44, weight: .bold, design: .rounded)
+    }
 
-    /// Small display text - 34pt bold rounded
-    static let displaySmall = Font.system(size: 34, weight: .bold, design: .rounded)
+    /// Small display text - 34pt bold rounded, scales with Dynamic Type
+    static var displaySmall: Font {
+        Font.system(size: 34, weight: .bold, design: .rounded)
+    }
 
     // MARK: - Title Fonts
 
-    /// Large title - 22pt semibold
-    static let titleLarge = Font.system(size: 22, weight: .semibold)
+    /// Large title - 22pt semibold, scales with Dynamic Type
+    static var titleLarge: Font {
+        Font.system(size: 22, weight: .semibold)
+    }
 
-    /// Medium title - 18pt semibold
-    static let titleMedium = Font.system(size: 18, weight: .semibold)
+    /// Medium title - 18pt semibold, scales with Dynamic Type
+    static var titleMedium: Font {
+        Font.system(size: 18, weight: .semibold)
+    }
 
     // MARK: - Metric Fonts (Tabular for alignment)
 
@@ -57,36 +68,50 @@ enum AppFont {
 
     // MARK: - Body Fonts (SF Pro for readability)
 
-    /// Large body text - 17pt regular
-    static let bodyLarge = Font.system(size: 17, weight: .regular)
+    /// Large body text - 17pt regular, scales with Dynamic Type
+    static var bodyLarge: Font {
+        .body
+    }
 
-    /// Medium body text - 15pt regular
-    static let bodyMedium = Font.system(size: 15, weight: .regular)
+    /// Medium body text - 15pt regular, scales with Dynamic Type
+    static var bodyMedium: Font {
+        .subheadline
+    }
 
-    /// Small body text - 13pt regular
-    static let bodySmall = Font.system(size: 13, weight: .regular)
+    /// Small body text - 13pt regular, scales with Dynamic Type
+    static var bodySmall: Font {
+        .footnote
+    }
 
     // MARK: - Label Fonts
 
-    /// Large label - 13pt semibold
-    static let labelLarge = Font.system(size: 13, weight: .semibold)
+    /// Large label - 13pt semibold, scales with Dynamic Type
+    static var labelLarge: Font {
+        Font.system(.footnote, design: .default, weight: .semibold)
+    }
 
-    /// Medium label - 12pt medium
-    static let labelMedium = Font.system(size: 12, weight: .medium)
+    /// Medium label - 12pt medium, scales with Dynamic Type
+    static var labelMedium: Font {
+        Font.system(.caption, design: .default, weight: .medium)
+    }
 
-    /// Small label - 11pt medium with small caps
+    /// Small label - 11pt medium with small caps, scales with Dynamic Type
     static var labelSmall: Font {
-        Font.system(size: 11, weight: .medium)
+        Font.system(.caption2, design: .default, weight: .medium)
             .uppercaseSmallCaps()
     }
 
     // MARK: - Caption Fonts
 
-    /// Large caption - 12pt regular
-    static let captionLarge = Font.system(size: 12, weight: .regular)
+    /// Large caption - 12pt regular, scales with Dynamic Type
+    static var captionLarge: Font {
+        .caption
+    }
 
-    /// Small caption - 10pt regular
-    static let captionSmall = Font.system(size: 10, weight: .regular)
+    /// Small caption - 10pt regular, scales with Dynamic Type
+    static var captionSmall: Font {
+        .caption2
+    }
 }
 
 // MARK: - Text Style Modifiers

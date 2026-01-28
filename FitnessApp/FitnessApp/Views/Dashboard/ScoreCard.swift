@@ -76,6 +76,20 @@ struct ScoreCard: View {
         .padding()
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private var accessibilityDescription: String {
+        var description = "\(title): \(value)"
+        if let subtitle {
+            description += ", \(subtitle)"
+        }
+        if let trend, let trendValue {
+            let trendDescription = trend == .up ? "up" : (trend == .down ? "down" : "stable")
+            description += ", trending \(trendDescription) \(trendValue)"
+        }
+        return description
     }
 
     private func trendColor(for trend: Trend) -> Color {

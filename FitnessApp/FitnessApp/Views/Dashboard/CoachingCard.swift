@@ -100,6 +100,16 @@ struct RecommendationCard: View {
             )
         )
         .cardBackground()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private var accessibilityDescription: String {
+        var description = "Today's Training recommendation for \(readiness.rawValue): \(sportSpecificRecommendation)"
+        if let workout = sportSpecificWorkout {
+            description += ". Suggested workout: \(workout)"
+        }
+        return description
     }
 
     // MARK: - Computed Properties
@@ -225,6 +235,9 @@ struct RefinedSportToggle: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(sport.rawValue) sport filter")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityHint("Tap to filter recommendations for \(sport.rawValue)")
     }
 }
 
@@ -297,6 +310,8 @@ struct ReadinessIndicator: View {
                 .font(AppFont.labelMedium)
                 .foregroundStyle(Color.textPrimary)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Readiness score: \(Int(score)), \(readiness.rawValue)")
     }
 }
 

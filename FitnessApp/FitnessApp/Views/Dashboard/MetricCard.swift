@@ -167,6 +167,8 @@ struct TrainingLoadRow: View {
         }
         .padding(Spacing.md)
         .cardBackground()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Training Load: Fitness \(Int(ctl)) \(fitnessStatus), Fatigue \(Int(atl)) \(fatigueStatus), Form \(Int(tsb)) \(formStatus)")
     }
 }
 

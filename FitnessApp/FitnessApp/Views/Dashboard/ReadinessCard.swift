@@ -90,6 +90,31 @@ struct ReadinessCard: View {
                 animatedScore = result.score
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private var accessibilityDescription: String {
+        var description = "Readiness: \(result.readiness.rawValue), score \(Int(result.score))"
+
+        if let hrv = result.components.hrvScore {
+            description += ", HRV \(Int(hrv))"
+        }
+        if let sleep = result.components.sleepScore {
+            description += ", Sleep \(Int(sleep))"
+        }
+        if let rhr = result.components.rhrScore {
+            description += ", Resting HR \(Int(rhr))"
+        }
+        if let recovery = result.components.recoveryScore {
+            description += ", Recovery \(Int(recovery))"
+        }
+
+        if !result.insights.isEmpty {
+            description += ". Insights: \(result.insights.joined(separator: ". "))"
+        }
+
+        return description
     }
 }
 
@@ -140,6 +165,8 @@ struct ComponentRow: View {
                 .frame(width: 28, alignment: .trailing)
                 .monospacedDigit()
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(Int(score)) out of 100")
     }
 }
 
@@ -171,6 +198,8 @@ struct ReadinessBadge: View {
         .padding(.vertical, Spacing.xs)
         .background(readiness.themeColor.opacity(0.1))
         .clipShape(Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Readiness: \(Int(score)), \(readiness.rawValue)")
     }
 }
 
