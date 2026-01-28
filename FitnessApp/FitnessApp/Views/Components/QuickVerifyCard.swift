@@ -276,12 +276,20 @@ struct QuickVerifyCard: View {
             workout.tss = tss  // Update the actual TSS
         }
 
+        var pmcCorrected = false
+        var correctedCTL: Double?
+        var correctedATL: Double?
+
         if let ctl = Double(ctlText), abs(ctl - currentCTL) > 0.5 {
             workout.userEnteredCTL = ctl
+            correctedCTL = ctl
+            pmcCorrected = true
         }
 
         if let atl = Double(atlText), abs(atl - currentATL) > 0.5 {
             workout.userEnteredATL = atl
+            correctedATL = atl
+            pmcCorrected = true
         }
 
         if let tsb = Double(tsbText), abs(tsb - currentTSB) > 0.5 {
@@ -290,6 +298,11 @@ struct QuickVerifyCard: View {
 
         workout.tssVerificationStatus = .corrected
         workout.verifiedAt = Date()
+
+        // If PMC values were corrected, anchor DailyMetrics to prevent drift
+        if pmcCorrected {
+            anchorPMCValues(ctl: correctedCTL, atl: correctedATL, for: workout.startDate)
+        }
 
         try? modelContext.save()
         editingField = nil
@@ -300,6 +313,50 @@ struct QuickVerifyCard: View {
         let delta = (workout.userEnteredTSS ?? workout.tss) - (workout.calculatedTSS ?? workout.tss)
         Task {
             await triggerLearning(tssCorrect: false, delta: delta)
+        }
+    }
+
+    /// Anchor PMC values in DailyMetrics to user-corrected values
+    /// This prevents cumulative drift by resetting to ground truth periodically
+    private func anchorPMCValues(ctl: Double?, atl: Double?, for date: Date) {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        // Find DailyMetrics for this day
+        let descriptor = FetchDescriptor<DailyMetrics>(
+            predicate: #Predicate { metrics in
+                metrics.date >= startOfDay && metrics.date < endOfDay
+            }
+        )
+
+        guard let metrics = try? modelContext.fetch(descriptor).first else {
+            // Create new DailyMetrics if none exists
+            let newMetrics = DailyMetrics(date: startOfDay)
+            if let ctl = ctl { newMetrics.ctl = ctl }
+            if let atl = atl { newMetrics.atl = atl }
+            modelContext.insert(newMetrics)
+            print("[QuickVerify] Created anchored DailyMetrics: CTL=\(ctl ?? 0), ATL=\(atl ?? 0)")
+            return
+        }
+
+        // Update existing metrics with corrected values
+        let previousCTL = metrics.ctl
+        let previousATL = metrics.atl
+
+        if let ctl = ctl {
+            metrics.ctl = ctl
+        }
+        if let atl = atl {
+            metrics.atl = atl
+        }
+
+        print("[QuickVerify] Anchored PMC to TP values:")
+        if let ctl = ctl {
+            print("  - CTL: \(String(format: "%.1f", previousCTL)) → \(String(format: "%.1f", ctl)) (Δ\(String(format: "%+.1f", ctl - previousCTL)))")
+        }
+        if let atl = atl {
+            print("  - ATL: \(String(format: "%.1f", previousATL)) → \(String(format: "%.1f", atl)) (Δ\(String(format: "%+.1f", atl - previousATL)))")
         }
     }
 
