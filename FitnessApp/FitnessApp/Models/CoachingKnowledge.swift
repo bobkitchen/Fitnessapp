@@ -44,17 +44,32 @@ final class CoachingKnowledge {
     /// Experience levels this applies to (stored as JSON array string)
     var applicableLevelsRaw: String?
 
-    // MARK: - Computed Properties for Arrays
+    // MARK: - Cached Decoded Properties
+    // FIX 2.4: Cache JSON decoded values to avoid decoding on every property access
+    // Using @Transient to prevent persistence of cache values
+
+    @Transient private var _keywordsCache: [String]?
+    @Transient private var _applicableGoalsCache: [String]??  // Double optional to distinguish nil vs not-cached
+    @Transient private var _applicableLevelsCache: [String]??
 
     var keywords: [String] {
         get {
+            // Return cached value if available
+            if let cached = _keywordsCache {
+                return cached
+            }
+
+            // Decode and cache
             guard let data = keywordsRaw.data(using: .utf8),
                   let array = try? JSONDecoder().decode([String].self, from: data) else {
+                _keywordsCache = []
                 return []
             }
+            _keywordsCache = array
             return array
         }
         set {
+            _keywordsCache = newValue  // Update cache
             if let data = try? JSONEncoder().encode(newValue),
                let string = String(data: data, encoding: .utf8) {
                 keywordsRaw = string
@@ -64,14 +79,23 @@ final class CoachingKnowledge {
 
     var applicableGoals: [String]? {
         get {
+            // Return cached value if available (using double-optional to distinguish)
+            if let cached = _applicableGoalsCache {
+                return cached
+            }
+
+            // Decode and cache
             guard let raw = applicableGoalsRaw,
                   let data = raw.data(using: .utf8),
                   let array = try? JSONDecoder().decode([String].self, from: data) else {
+                _applicableGoalsCache = .some(nil)
                 return nil
             }
+            _applicableGoalsCache = array
             return array
         }
         set {
+            _applicableGoalsCache = newValue  // Update cache
             if let newValue = newValue,
                let data = try? JSONEncoder().encode(newValue),
                let string = String(data: data, encoding: .utf8) {
@@ -84,14 +108,23 @@ final class CoachingKnowledge {
 
     var applicableLevels: [String]? {
         get {
+            // Return cached value if available
+            if let cached = _applicableLevelsCache {
+                return cached
+            }
+
+            // Decode and cache
             guard let raw = applicableLevelsRaw,
                   let data = raw.data(using: .utf8),
                   let array = try? JSONDecoder().decode([String].self, from: data) else {
+                _applicableLevelsCache = .some(nil)
                 return nil
             }
+            _applicableLevelsCache = array
             return array
         }
         set {
+            _applicableLevelsCache = newValue  // Update cache
             if let newValue = newValue,
                let data = try? JSONEncoder().encode(newValue),
                let string = String(data: data, encoding: .utf8) {

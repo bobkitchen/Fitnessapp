@@ -12,6 +12,7 @@ struct PerformanceView: View {
     @State private var selectedSegment: PerformanceSegment = .training
     @State private var showingFullPMC = false
     @State private var selectedWorkout: WorkoutRecord?
+    @State private var showingProfileSheet = false
 
     enum PerformanceSegment: String, CaseIterable {
         case training = "Training"
@@ -86,7 +87,15 @@ struct PerformanceView: View {
             .navigationTitle("Performance")
             .toolbarBackground(Color.backgroundPrimary, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ProfileAvatarButton(showingProfile: $showingProfileSheet)
+                }
+            }
             .preferredColorScheme(.dark)
+            .sheet(isPresented: $showingProfileSheet) {
+                ProfileSheetView()
+            }
             .sheet(isPresented: $showingFullPMC) {
                 fullPMCSheet
             }

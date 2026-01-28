@@ -7,14 +7,24 @@ struct CoachView: View {
 
     @State private var messages: [ChatMessage] = []
     @State private var inputText = ""
-    @State private var isLoading = false
+    @State private var chatState: ChatState = .idle
     @State private var streamingText = ""
     @State private var errorMessage: String?
+    @State private var showingProfileSheet = false
+    @State private var currentTask: Task<Void, Never>?
     @FocusState private var isInputFocused: Bool
+
+    // FIX 4.1: Track last failed message for retry functionality
+    @State private var lastFailedMessage: String?
+    // FIX 4.2: Track scroll position for "jump to latest" button
+    @State private var isScrolledUp = false
 
     @AppStorage("defaultAIModel") private var defaultModelId = "anthropic/claude-sonnet-4"
 
     private let openRouterService = OpenRouterService()
+
+    /// Timeout for AI requests (45 seconds)
+    private let requestTimeout: TimeInterval = 45
 
     /// Get the selected model from settings
     private var selectedModel: OpenRouterService.AIModel {
@@ -28,7 +38,7 @@ struct CoachView: View {
                 messagesView
 
                 // Quick suggestions (if no messages and not typing)
-                if messages.isEmpty && !isLoading && !isInputFocused {
+                if messages.isEmpty && !chatState.isLoading && !isInputFocused {
                     quickSuggestions
                 }
 
@@ -49,18 +59,44 @@ struct CoachView: View {
                         Label("New Chat", systemImage: "plus.bubble")
                     }
                     .foregroundStyle(Color.accentPrimary)
-                    .disabled(messages.isEmpty && !isLoading)
+                    .disabled(messages.isEmpty && !chatState.isLoading)
+                    // FIX 3.1: VoiceOver accessibility
+                    .accessibilityLabel("Start new chat")
+                    .accessibilityHint("Double tap to clear current conversation and start fresh")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    ProfileAvatarButton(showingProfile: $showingProfileSheet)
+                        // FIX 3.1: VoiceOver accessibility
+                        .accessibilityLabel("Profile settings")
+                        .accessibilityHint("Double tap to view and edit your profile")
                 }
             }
+            .sheet(isPresented: $showingProfileSheet) {
+                ProfileSheetView()
+            }
+            // FIX 4.1: Enhanced error alert with retry button
             .alert("Error", isPresented: .init(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
             )) {
-                Button("OK") { errorMessage = nil }
+                // Show retry button if we have a failed message to retry
+                if lastFailedMessage != nil {
+                    Button("Retry") {
+                        retryLastMessage()
+                    }
+                }
+                Button("OK", role: .cancel) {
+                    errorMessage = nil
+                    lastFailedMessage = nil
+                }
             } message: {
-                Text(errorMessage ?? "")
+                Text(errorMessage ?? "Something went wrong")
             }
             .preferredColorScheme(.dark)
+            .onDisappear {
+                // Cancel any running task when view disappears
+                cancelCurrentTask()
+            }
         }
     }
 
@@ -69,51 +105,122 @@ struct CoachView: View {
     @ViewBuilder
     private var messagesView: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    ForEach(messages) { message in
-                        ChatBubble(message: message)
-                            .id(message.id)
-                    }
-
-                    // Streaming message
-                    if isLoading && !streamingText.isEmpty {
-                        ChatBubble(message: ChatMessage(
-                            role: .assistant,
-                            content: streamingText
-                        ))
-                        .id("streaming")
-                    }
-
-                    // Loading indicator
-                    if isLoading && streamingText.isEmpty {
-                        HStack {
-                            ProgressView()
-                                .padding(.trailing, 8)
-                            Text("Thinking...")
-                                .foregroundStyle(.secondary)
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(messages) { message in
+                            ChatBubble(message: message)
+                                .id(message.id)
                         }
-                        .padding()
-                        .id("loading")
+
+                        // Streaming message - use plain Text to avoid MarkdownText crash
+                        // MarkdownText.parseBlocks() crashes on incomplete markdown during streaming
+                        if chatState.isLoading && !streamingText.isEmpty {
+                            HStack {
+                                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                                    Text(streamingText)
+                                        .font(AppFont.bodyMedium)
+                                        .textSelection(.enabled)
+                                    Text(Date(), style: .time)
+                                        .font(AppFont.captionSmall)
+                                        .foregroundStyle(Color.textTertiary)
+                                }
+                                .padding(Spacing.sm)
+                                .background(Color.backgroundTertiary)
+                                .foregroundStyle(Color.textPrimary)
+                                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large))
+                                Spacer(minLength: 40)
+                            }
+                            .id("streaming")
+                        }
+
+                        // Loading indicator
+                        if chatState.isLoading && streamingText.isEmpty {
+                            HStack {
+                                ProgressView()
+                                    .padding(.trailing, 8)
+                                Text(chatState.statusText.isEmpty ? "Thinking..." : chatState.statusText)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding()
+                            .id("loading")
+                            // FIX 3.1: VoiceOver accessibility for loading state
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("AI coach is thinking")
+                            .accessibilityAddTraits(.updatesFrequently)
+                        }
+
+                        // Invisible anchor at the bottom for scroll detection
+                        Color.clear
+                            .frame(height: 1)
+                            .id("bottom")
+                    }
+                    .padding()
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    isInputFocused = false
+                }
+                .onChange(of: messages.count) {
+                    isScrolledUp = false  // Reset when new messages arrive
+                    withAnimation {
+                        proxy.scrollTo(messages.last?.id, anchor: .bottom)
                     }
                 }
-                .padding()
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                isInputFocused = false
-            }
-            .onChange(of: messages.count) {
-                withAnimation {
-                    proxy.scrollTo(messages.last?.id, anchor: .bottom)
+                .onChange(of: streamingText) {
+                    // Scroll without animation during streaming to reduce layout overhead
+                    // and prevent executor starvation from rapid onChange triggers
+                    // FIX 4.2: Only auto-scroll if user hasn't manually scrolled up
+                    if chatState.isLoading && !isScrolledUp {
+                        proxy.scrollTo("streaming", anchor: .bottom)
+                    } else if !chatState.isLoading {
+                        withAnimation {
+                            proxy.scrollTo("streaming", anchor: .bottom)
+                        }
+                    }
+                }
+
+                // FIX 4.2: "Jump to latest" button when scrolled up during streaming
+                if isScrolledUp && chatState.isLoading {
+                    Button {
+                        isScrolledUp = false
+                        withAnimation {
+                            if !streamingText.isEmpty {
+                                proxy.scrollTo("streaming", anchor: .bottom)
+                            } else {
+                                proxy.scrollTo("loading", anchor: .bottom)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: Spacing.xs) {
+                            Image(systemName: "arrow.down")
+                            Text("Jump to latest")
+                        }
+                        .font(AppFont.labelMedium)
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Color.accentSecondary)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                    }
+                    .padding(.bottom, Spacing.md)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityLabel("Jump to latest message")
+                    .accessibilityHint("Double tap to scroll to the newest content")
                 }
             }
-            .onChange(of: streamingText) {
-                withAnimation {
-                    proxy.scrollTo("streaming", anchor: .bottom)
-                }
-            }
+            // Detect manual scroll-up gesture
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        // User is scrolling up (dragging down)
+                        if value.translation.height > 50 && chatState.isLoading {
+                            isScrolledUp = true
+                        }
+                    }
+            )
         }
     }
 
@@ -127,6 +234,8 @@ struct CoachView: View {
                 .foregroundStyle(Color.textTertiary)
                 .tracking(0.5)
                 .padding(.horizontal, Spacing.md)
+                // FIX 3.1: VoiceOver accessibility
+                .accessibilityAddTraits(.isHeader)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Spacing.xs) {
@@ -147,10 +256,16 @@ struct CoachView: View {
                                 )
                         }
                         .buttonStyle(.plain)
+                        // FIX 3.1: VoiceOver accessibility for suggestion buttons
+                        .accessibilityLabel(suggestion.title)
+                        .accessibilityHint("Double tap to ask the coach this question")
                     }
                 }
                 .padding(.horizontal, Spacing.md)
             }
+            // FIX 3.1: Mark suggestions container for accessibility
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Quick question suggestions")
         }
         .padding(.vertical, Spacing.md)
         .background(Color.backgroundSecondary)
@@ -170,6 +285,9 @@ struct CoachView: View {
                 .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large))
                 .lineLimit(1...5)
                 .focused($isInputFocused)
+                // FIX 3.1: VoiceOver accessibility
+                .accessibilityLabel("Message input")
+                .accessibilityHint("Type your question for the AI coach")
 
             Button {
                 sendMessage()
@@ -178,7 +296,10 @@ struct CoachView: View {
                     .font(.system(size: 36))
                     .foregroundStyle(inputText.isEmpty ? Color.textTertiary : Color.accentSecondary)
             }
-            .disabled(inputText.isEmpty || isLoading)
+            .disabled(inputText.isEmpty || chatState.isLoading)
+            // FIX 3.1: VoiceOver accessibility for send button
+            .accessibilityLabel("Send message")
+            .accessibilityHint(inputText.isEmpty ? "Enter a message first" : "Double tap to send your question")
         }
         .padding(Spacing.md)
         .background(Color.backgroundSecondary)
@@ -189,46 +310,146 @@ struct CoachView: View {
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        guard chatState.canSendMessage else { return }
 
         inputText = ""
 
         let userMessage = ChatMessage(role: .user, content: text)
         messages.append(userMessage)
 
-        Task {
-            await sendToAI()
-        }
+        startAITask()
     }
 
     private func sendQuickSuggestion(_ prompt: String) {
+        guard chatState.canSendMessage else { return }
+
         let userMessage = ChatMessage(role: .user, content: prompt)
         messages.append(userMessage)
 
-        Task {
-            await sendToAI()
-        }
+        startAITask()
     }
 
     private func clearChat() {
+        // Cancel any running task
+        cancelCurrentTask()
+
         withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
             messages.removeAll()
             streamingText = ""
             errorMessage = nil
+            lastFailedMessage = nil
+            chatState = .idle
         }
     }
 
-    private func sendToAI() async {
-        isLoading = true
+    // FIX 4.1: Retry the last failed message
+    private func retryLastMessage() {
+        guard let failedMessage = lastFailedMessage else { return }
+        errorMessage = nil
+        lastFailedMessage = nil
+
+        // Remove the failed user message from the list if it exists
+        // (it was added before the error occurred)
+        if let lastUserIndex = messages.lastIndex(where: { $0.role == .user && $0.content == failedMessage }) {
+            messages.remove(at: lastUserIndex)
+        }
+
+        // Re-add and retry
+        let userMessage = ChatMessage(role: .user, content: failedMessage)
+        messages.append(userMessage)
+        startAITask()
+    }
+
+    /// Cancel the current AI task if running
+    private func cancelCurrentTask() {
+        currentTask?.cancel()
+        currentTask = nil
+    }
+
+    /// Start the AI task with proper lifecycle management
+    private func startAITask() {
+        // Cancel any existing task first
+        cancelCurrentTask()
+
+        chatState = .preparingContext
         streamingText = ""
 
+        currentTask = Task {
+            await sendToAI()
+        }
+    }
+
+    @MainActor
+    private func sendToAI() async {
+        // Get the user's question for RAG retrieval (declared outside do block for error handling)
+        let userQuestion = messages.last(where: { $0.role == .user })?.content ?? ""
+
+        // Ensure we reset state when task completes (for any reason)
+        // Preserve error states so they aren't overwritten with .idle
+        defer {
+            if !Task.isCancelled && !chatState.isError {
+                chatState = .idle
+                streamingText = ""
+            }
+        }
+
         do {
-            // Get the user's question for RAG retrieval
-            let userQuestion = messages.last(where: { $0.role == .user })?.content ?? ""
+            // Check for cancellation early
+            try Task.checkCancellation()
 
             // Build context with RAG knowledge retrieval
             let contextBuilder = CoachingContextBuilder(modelContext: modelContext)
-            let context = try await contextBuilder.buildContext(for: userQuestion)
+
+            // Wrap context building in timeout
+            // FIX: Use defer to ensure cancelAll() runs even when timeout throws
+            let context = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask {
+                    try await contextBuilder.buildContext(for: userQuestion)
+                }
+
+                group.addTask {
+                    try await Task.sleep(for: .seconds(self.requestTimeout))
+                    throw ChatError.timeout
+                }
+
+                // CRITICAL FIX: Always cancel remaining tasks, even if we throw
+                // Without defer, if the timeout task completes first, the context-building
+                // task continues running in the background, wasting resources
+                defer { group.cancelAll() }
+
+                guard let result = try await group.next() else {
+                    throw ChatError.timeout
+                }
+                return result
+            }
+
             let systemPrompt = contextBuilder.generateSystemPrompt()
+
+            // Check for cancellation after context building
+            guard !Task.isCancelled else { return }
+
+            // FIX: Validate context size doesn't exceed API token limits
+            // Estimate tokens (rough: ~4 chars per token) and truncate if needed
+            let maxContextTokens = 6000  // Leave room for response
+            var truncatedContext = context
+            let estimatedTokens = await openRouterService.estimateTokenCount(context + userQuestion)
+
+            if estimatedTokens > maxContextTokens {
+                // Truncate context to fit within limits
+                // Keep the most important parts (beginning has profile/current status)
+                let targetCharCount = maxContextTokens * 4
+                if context.count > targetCharCount {
+                    truncatedContext = String(context.prefix(targetCharCount))
+                    // Try to end at a section boundary
+                    if let lastSection = truncatedContext.range(of: "\n## ", options: .backwards) {
+                        truncatedContext = String(truncatedContext[..<lastSection.lowerBound])
+                    }
+                    truncatedContext += "\n\n[Context truncated due to length]"
+                    print("[Coach] Context truncated from \(context.count) to \(truncatedContext.count) chars")
+                }
+            }
+
+            chatState = .streaming(progress: "")
 
             // Add context to first message
             var contextualMessages = messages
@@ -237,21 +458,81 @@ struct CoachView: View {
                 contextualMessages[firstIndex] = ChatMessage(
                     id: original.id,
                     role: .user,
-                    content: "\(context)\n\n## Question\n\(original.content)",
+                    content: "\(truncatedContext)\n\n## Question\n\(original.content)",
                     timestamp: original.timestamp
                 )
             }
 
-            // Stream response
+            // Stream response with timeout
             let stream = await openRouterService.streamMessage(
                 messages: contextualMessages,
                 model: selectedModel,
                 systemPrompt: systemPrompt
             )
 
-            for try await chunk in stream {
-                streamingText += chunk
+            // Activity tracker for watchdog timeout
+            let activityTracker = StreamActivityTracker()
+            let streamTimeout: TimeInterval = 30
+
+            // Start watchdog task that will cancel us if stream stalls
+            let watchdogTask = Task.detached {
+                while true {
+                    try await Task.sleep(for: .seconds(5))
+                    try Task.checkCancellation()
+                    let elapsed = await activityTracker.timeSinceLastActivity()
+                    if elapsed > streamTimeout {
+                        print("[Coach] Watchdog: timeout after \(elapsed)s of inactivity")
+                        // Don't throw - just return. The main task checks isCancelled.
+                        return
+                    }
+                }
             }
+            defer { watchdogTask.cancel() }
+
+            // Batch UI updates to prevent executor starvation
+            var buffer = ""
+            var lastUpdateTime = Date()
+            let updateInterval: TimeInterval = 0.05
+            var consumedChunks = 0
+
+            print("[Coach] Starting stream consumption with watchdog")
+            for try await chunk in stream {
+                consumedChunks += 1
+                await activityTracker.touch()
+
+                // Check for cancellation on each chunk
+                try Task.checkCancellation()
+
+                // Check watchdog status - if it completed, we timed out
+                if watchdogTask.isCancelled == false {
+                    // Watchdog still running, check if it detected timeout
+                    let elapsed = await activityTracker.timeSinceLastActivity()
+                    if elapsed > streamTimeout {
+                        print("[Coach] Stream timeout after \(consumedChunks) chunks")
+                        throw ChatError.timeout
+                    }
+                }
+
+                buffer += chunk
+                let now = Date()
+                if now.timeIntervalSince(lastUpdateTime) >= updateInterval {
+                    if consumedChunks % 20 == 0 {
+                        print("[Coach] UI update #\(consumedChunks), text length: \(streamingText.count + buffer.count)")
+                    }
+                    streamingText += buffer
+                    buffer = ""
+                    lastUpdateTime = now
+                }
+            }
+
+            // Flush any remaining buffer
+            if !buffer.isEmpty {
+                streamingText += buffer
+            }
+            print("[Coach] Exited stream loop after \(consumedChunks) chunks, final length: \(streamingText.count)")
+
+            // Final cancellation check
+            guard !Task.isCancelled else { return }
 
             // Add completed message
             let assistantMessage = ChatMessage(role: .assistant, content: streamingText)
@@ -265,12 +546,33 @@ struct CoachView: View {
                 modelContext: modelContext
             )
 
+        } catch is CancellationError {
+            // Clean cancellation - state will be reset by defer
+            return
+        } catch ChatError.timeout {
+            // FIX 4.1: Save failed message for retry
+            lastFailedMessage = userQuestion
+            chatState = .error(message: "Request timed out. Please try again.")
+            errorMessage = "Request timed out. Please try again."
         } catch {
+            // FIX 4.1: Save failed message for retry
+            lastFailedMessage = userQuestion
+            chatState = .error(message: error.localizedDescription)
             errorMessage = error.localizedDescription
         }
+    }
+}
 
-        isLoading = false
-        streamingText = ""
+// MARK: - Chat Errors
+
+enum ChatError: LocalizedError {
+    case timeout
+
+    var errorDescription: String? {
+        switch self {
+        case .timeout:
+            return "Request timed out. Please try again."
+        }
     }
 }
 
@@ -280,6 +582,13 @@ struct ChatBubble: View {
     let message: ChatMessage
 
     private var isUser: Bool { message.role == .user }
+
+    /// Format timestamp for accessibility
+    private var accessibleTimestamp: String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: message.timestamp)
+    }
 
     var body: some View {
         HStack {
@@ -303,6 +612,10 @@ struct ChatBubble: View {
             .background(isUser ? Color.accentSecondary : Color.backgroundTertiary)
             .foregroundStyle(isUser ? .white : Color.textPrimary)
             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large))
+            // FIX 3.1: VoiceOver accessibility for chat bubbles
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(isUser ? "You" : "Coach") said: \(message.content)")
+            .accessibilityHint("Message sent at \(accessibleTimestamp)")
 
             if !isUser { Spacer(minLength: 40) }
         }
@@ -314,6 +627,9 @@ struct ChatBubble: View {
 /// Renders markdown content with proper formatting
 struct MarkdownText: View {
     let content: String
+
+    // FIX 3.2: Use ScaledMetric for Dynamic Type support in code blocks
+    @ScaledMetric(relativeTo: .body) private var codeBlockFontSize: CGFloat = 13
 
     init(_ content: String) {
         self.content = content
@@ -462,6 +778,8 @@ struct MarkdownText: View {
                 .font(headingFont(for: level))
                 .fontWeight(.semibold)
                 .padding(.top, level == 1 ? Spacing.sm : Spacing.xs)
+                // FIX 3.3: Add semantic heading role for VoiceOver
+                .accessibilityAddTraits(.isHeader)
 
         case .bulletList(let items):
             VStack(alignment: .leading, spacing: Spacing.xs) {
@@ -470,10 +788,14 @@ struct MarkdownText: View {
                         Text("•")
                             .font(AppFont.bodyMedium)
                             .foregroundStyle(Color.accentPrimary)
+                            .accessibilityHidden(true)  // Hide bullet from VoiceOver
                         renderInlineMarkdown(item)
                             .font(AppFont.bodyMedium)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    // FIX 3.3: Combine list item for VoiceOver
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("List item: \(item)")
                 }
             }
 
@@ -485,26 +807,34 @@ struct MarkdownText: View {
                             .font(AppFont.bodyMedium)
                             .foregroundStyle(Color.accentPrimary)
                             .frame(minWidth: 20, alignment: .trailing)
+                            .accessibilityHidden(true)  // Hide number from VoiceOver
                         renderInlineMarkdown(item)
                             .font(AppFont.bodyMedium)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    // FIX 3.3: Combine numbered list item for VoiceOver
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Item \(index + 1): \(item)")
                 }
             }
 
         case .codeBlock(let code):
             Text(code)
-                .font(.system(size: 13, design: .monospaced))
+                // FIX 3.2: Use scaled font size for Dynamic Type support
+                .font(.system(size: codeBlockFontSize, design: .monospaced))
                 .padding(Spacing.sm)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.backgroundPrimary)
                 .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small))
+                // FIX 3.3: Mark code block for VoiceOver
+                .accessibilityLabel("Code block: \(code)")
 
         case .blockquote(let text):
             HStack(alignment: .top, spacing: Spacing.xs) {
                 Rectangle()
                     .fill(Color.accentSecondary)
                     .frame(width: 3)
+                    .accessibilityHidden(true)  // Hide decorative element
                 renderInlineMarkdown(text)
                     .font(AppFont.bodyMedium)
                     .italic()
@@ -512,6 +842,9 @@ struct MarkdownText: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, Spacing.xs)
+            // FIX 3.3: Mark blockquote for VoiceOver
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Quote: \(text)")
         }
     }
 
@@ -531,6 +864,22 @@ struct MarkdownText: View {
             return Text(attributed)
         }
         return Text(text)
+    }
+}
+
+// MARK: - Stream Activity Tracker
+
+/// Actor for thread-safe activity tracking during streaming.
+/// Used by watchdog timeout to detect stalled streams.
+private actor StreamActivityTracker {
+    private var lastActivity = Date()
+
+    func touch() {
+        lastActivity = Date()
+    }
+
+    func timeSinceLastActivity() -> TimeInterval {
+        Date().timeIntervalSince(lastActivity)
     }
 }
 

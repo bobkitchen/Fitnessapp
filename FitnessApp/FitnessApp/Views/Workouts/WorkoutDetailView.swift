@@ -1,10 +1,15 @@
 import SwiftUI
+import SwiftData
 import Charts
+import MapKit
 
 /// Detailed view of a single workout
 struct WorkoutDetailView: View {
     let workout: WorkoutRecord
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Environment(HealthKitService.self) private var healthKitService
+    @State private var isFetchingRoute = false
 
     var body: some View {
         NavigationStack {
@@ -12,6 +17,21 @@ struct WorkoutDetailView: View {
                 VStack(spacing: 20) {
                     // Header card
                     headerCard
+
+                    // Route map (if available)
+                    if let coordinates = workout.routeCoordinates, coordinates.count >= 2 {
+                        routeMapCard(coordinates: coordinates)
+                    } else if !workout.indoorWorkout && workout.activityCategory != .strength {
+                        Button {
+                            Task { await fetchRouteFromHealthKit() }
+                        } label: {
+                            Label(isFetchingRoute ? "Searching..." : "Find Route in Apple Health",
+                                  systemImage: "map")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isFetchingRoute)
+                    }
 
                     // Key metrics
                     metricsGrid
@@ -41,9 +61,17 @@ struct WorkoutDetailView: View {
             .navigationTitle("Workout Details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink("Edit") {
+                        WorkoutEditView(workout: workout)
+                    }
+                }
+            }
+            .onChange(of: workout.isDeleted) { _, isDeleted in
+                if isDeleted { dismiss() }
             }
         }
     }
@@ -135,13 +163,15 @@ struct WorkoutDetailView: View {
                 MetricCard(title: "Avg Cadence", value: "\(cadence)", unit: workout.activityCategory == .bike ? "rpm" : "spm", icon: "metronome", color: .purple)
             }
 
-            MetricCard(
-                title: "Intensity Factor",
-                value: String(format: "%.2f", workout.intensityFactor),
-                unit: "",
-                icon: "gauge.with.needle",
-                color: .blue
-            )
+            if workout.intensityFactor > 0 {
+                MetricCard(
+                    title: "Intensity Factor",
+                    value: String(format: "%.2f", workout.intensityFactor),
+                    unit: "",
+                    icon: "gauge.with.needle",
+                    color: .blue
+                )
+            }
         }
     }
 
@@ -300,6 +330,37 @@ struct WorkoutDetailView: View {
         .padding()
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Route Map Card
+
+    @ViewBuilder
+    private func routeMapCard(coordinates: [CLLocationCoordinate2D]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Route")
+                .font(.headline)
+
+            Map {
+                MapPolyline(coordinates: coordinates)
+                    .stroke(activityColor, lineWidth: 3)
+            }
+            .mapStyle(.standard(elevation: .realistic))
+            .frame(height: 220)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .allowsHitTesting(false)
+        }
+        .padding()
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Route Fetching
+
+    private func fetchRouteFromHealthKit() async {
+        isFetchingRoute = true
+        defer { isFetchingRoute = false }
+        let service = RouteEnrichmentService(healthKitService: healthKitService)
+        _ = await service.enrichSingleWorkout(workout, modelContext: modelContext)
     }
 
     // MARK: - Helper Views & Methods

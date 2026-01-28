@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import CoreLocation
 
 @Model
 final class WorkoutRecord {
@@ -94,6 +95,7 @@ final class WorkoutRecord {
     // MARK: - GPS Route
     var hasRoute: Bool
     var routeFileURL: String?               // Path to stored GPX/route data
+    var routeData: Data?                    // Encoded polyline coordinates (JSON array of [lat, lng] pairs)
 
     init(
         id: UUID = UUID(),
@@ -222,6 +224,23 @@ final class WorkoutRecord {
     /// Icon for the activity
     var activityIcon: String {
         activityCategory.icon
+    }
+
+    /// Decoded GPS route coordinates from stored routeData
+    var routeCoordinates: [CLLocationCoordinate2D]? {
+        guard let data = routeData,
+              let coords = try? JSONDecoder().decode([[Double]].self, from: data),
+              !coords.isEmpty else { return nil }
+        return coords.compactMap { pair in
+            guard pair.count == 2 else { return nil }
+            return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
+        }
+    }
+
+    /// Encode route coordinates as JSON data for storage
+    static func encodeRoute(_ coordinates: [(latitude: Double, longitude: Double)]) -> Data? {
+        let pairs = coordinates.map { [$0.latitude, $0.longitude] }
+        return try? JSONEncoder().encode(pairs)
     }
 }
 

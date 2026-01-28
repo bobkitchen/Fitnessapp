@@ -35,7 +35,7 @@ struct TPWorkoutImport: Codable, Sendable {
     var activityCategory: ActivityCategory {
         let type = workoutType.lowercased()
 
-        if type.contains("cycling") || type.contains("bike") || type.contains("ride") || type.contains("indoor cycling") {
+        if type.contains("cycling") || type.contains("bike") || type.contains("biking") || type.contains("ride") {
             return .bike
         } else if type.contains("running") || type.contains("run") || type.contains("treadmill") {
             return .run

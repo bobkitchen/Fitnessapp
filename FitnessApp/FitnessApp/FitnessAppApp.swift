@@ -18,6 +18,7 @@ struct FitnessAppApp: App {
     let modelContainer: ModelContainer
 
     @State private var healthKitService = HealthKitService()
+    @State private var readinessState = ReadinessStateService()
     @State private var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
 
     init() {
@@ -58,9 +59,11 @@ struct FitnessAppApp: App {
             if hasCompletedOnboarding {
                 MainTabView()
                     .environment(healthKitService)
+                    .environment(readinessState)
             } else {
                 OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
                     .environment(healthKitService)
+                    .environment(readinessState)
             }
         }
         .modelContainer(modelContainer)
@@ -74,7 +77,7 @@ struct MainTabView: View {
     @Environment(HealthKitService.self) private var healthKitService
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedTab = 0
+    @State private var selectedTab = 1  // Default to Today (center tab)
 
     // Calibration state
     @State private var pendingScreenshotURL: URL?
@@ -88,20 +91,16 @@ struct MainTabView: View {
     var body: some View {
         ZStack {
             TabView(selection: $selectedTab) {
-                Tab("Dashboard", systemImage: "chart.bar", value: 0) {
-                    DashboardView()
-                }
-
-                Tab("Performance", systemImage: "waveform.path.ecg", value: 1) {
-                    PerformanceView()
-                }
-
-                Tab("Coach", systemImage: "bubble.left", value: 2) {
+                Tab("Coach", systemImage: "bubble.left.fill", value: 0) {
                     CoachView()
                 }
 
-                Tab("Settings", systemImage: "gear", value: 3) {
-                    SettingsView()
+                Tab("Today", systemImage: "figure.stand", value: 1) {
+                    DashboardView()
+                }
+
+                Tab("Performance", systemImage: "waveform.path.ecg", value: 2) {
+                    PerformanceView()
                 }
             }
             .tabViewStyle(.tabBarOnly)
@@ -295,10 +294,10 @@ struct MainTabView: View {
             let hasInitialSync = UserDefaults.standard.bool(forKey: "hasSyncedProfileFromHealthKit")
 
             // Sync birth date only on first sync (age doesn't change)
-            if !hasInitialSync, profile.birthDate == nil, let age = healthData.age {
-                let calendar = Calendar.current
-                if let birthDate = calendar.date(byAdding: .year, value: -age, to: Date()) {
-                    profile.birthDate = birthDate
+            // Use fetchDateOfBirth() directly to get exact date, not reconstructed from age
+            if !hasInitialSync, profile.birthDate == nil {
+                if let dateOfBirth = try? healthKitService.fetchDateOfBirth() {
+                    profile.birthDate = dateOfBirth
                     didUpdate = true
                 }
             }
@@ -415,4 +414,5 @@ enum AppConstants {
             UserMemory.self
         ], inMemory: true)
         .environment(HealthKitService())
+        .environment(ReadinessStateService())
 }

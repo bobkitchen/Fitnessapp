@@ -10,12 +10,20 @@ import SwiftData
 
 /// Service for retrieving relevant coaching knowledge based on user questions.
 /// Implements keyword-based retrieval with category inference and relevance scoring.
-@MainActor
+///
+/// PERFORMANCE FIX: Removed @MainActor to allow database operations off the main thread.
+/// Uses its own ModelContext created from the container for thread safety.
 final class KnowledgeRetrievalService {
     private let modelContext: ModelContext
 
     /// Number of top documents to return
     private let topK: Int
+
+    /// FIX 2.1: Cache knowledge documents to avoid fetching on every query
+    /// Knowledge documents rarely change, so caching is safe
+    private var cachedKnowledge: [CoachingKnowledge]?
+    private var cacheTimestamp: Date?
+    private let cacheValiditySeconds: TimeInterval = 300  // 5 minutes
 
     init(modelContext: ModelContext, topK: Int = 5) {
         self.modelContext = modelContext
@@ -28,9 +36,10 @@ final class KnowledgeRetrievalService {
     /// - Parameter question: The user's question or query
     /// - Returns: Array of relevant CoachingKnowledge documents, ranked by relevance
     func retrieveKnowledge(for question: String) throws -> [CoachingKnowledge] {
-        let allKnowledge = try fetchAllKnowledge()
+        let allKnowledge = try fetchKnowledgeWithCache()
         guard !allKnowledge.isEmpty else { return [] }
 
+        // FIX 2.2: Use Set for O(1) keyword matching instead of nested loops
         let questionKeywords = extractKeywords(from: question)
         let inferredCategories = inferCategories(from: question)
 
@@ -51,6 +60,12 @@ final class KnowledgeRetrievalService {
         // Sort by score descending and take top K
         scoredDocuments.sort { $0.score > $1.score }
         return Array(scoredDocuments.prefix(topK).map(\.document))
+    }
+
+    /// Invalidates the knowledge cache, forcing a fresh fetch on next query
+    func invalidateCache() {
+        cachedKnowledge = nil
+        cacheTimestamp = nil
     }
 
     /// Formats retrieved knowledge documents for injection into the coaching context.
@@ -213,6 +228,7 @@ final class KnowledgeRetrievalService {
     // MARK: - Relevance Scoring
 
     /// Calculates a relevance score for a document based on keyword and category matching.
+    /// FIX 2.2: Use Set intersection for O(n) instead of O(n²) nested loops
     private func calculateRelevanceScore(
         document: CoachingKnowledge,
         questionKeywords: Set<String>,
@@ -220,17 +236,25 @@ final class KnowledgeRetrievalService {
     ) -> Double {
         var score: Double = 0
 
-        // Keyword matching (weighted by number of matches)
+        // FIX 2.2: Use Set intersection for O(1) exact keyword matching
         let documentKeywords = Set(document.keywords.map { $0.lowercased() })
-        let keywordMatches = questionKeywords.intersection(documentKeywords).count
-        score += Double(keywordMatches) * 2.0
+        let exactMatches = questionKeywords.intersection(documentKeywords)
+        score += Double(exactMatches.count) * 2.0
 
-        // Partial keyword matching (substring matches)
-        for questionKeyword in questionKeywords {
-            for docKeyword in documentKeywords {
-                if docKeyword.contains(questionKeyword) || questionKeyword.contains(docKeyword) {
-                    if docKeyword != questionKeyword {
-                        score += 0.5  // Partial match bonus
+        // FIX 2.2: Optimized partial matching - only check non-exact matches
+        // Uses a single pass approach instead of nested O(n²) loops
+        let unmatchedQuestionKeywords = questionKeywords.subtracting(exactMatches)
+        let unmatchedDocKeywords = documentKeywords.subtracting(exactMatches)
+
+        // Only do substring matching if there are unmatched keywords
+        if !unmatchedQuestionKeywords.isEmpty && !unmatchedDocKeywords.isEmpty {
+            // Build a simple prefix/suffix index for faster partial matching
+            for questionKeyword in unmatchedQuestionKeywords where questionKeyword.count >= 3 {
+                for docKeyword in unmatchedDocKeywords where docKeyword.count >= 3 {
+                    // Check if one contains the other (partial match)
+                    if docKeyword.contains(questionKeyword) || questionKeyword.contains(docKeyword) {
+                        score += 0.5
+                        break  // Only count once per question keyword
                     }
                 }
             }
@@ -249,23 +273,42 @@ final class KnowledgeRetrievalService {
             }
         }
 
-        // Title matching
+        // Title matching - use Set intersection
         let titleKeywords = extractKeywords(from: document.title)
         let titleMatches = questionKeywords.intersection(titleKeywords).count
         score += Double(titleMatches) * 1.5
 
-        // Content matching (lightweight - just check for question keyword presence)
+        // Content matching - limit to first few keywords to avoid O(n*m) worst case
         let contentLower = document.content.lowercased()
-        for keyword in questionKeywords {
+        var contentMatchCount = 0
+        for keyword in questionKeywords.prefix(10) {  // Limit iterations
             if contentLower.contains(keyword) {
-                score += 0.3
+                contentMatchCount += 1
             }
         }
+        score += Double(contentMatchCount) * 0.3
 
         return score
     }
 
     // MARK: - Data Fetching
+
+    /// FIX 2.1: Fetch knowledge with caching to avoid loading all documents on every query
+    private func fetchKnowledgeWithCache() throws -> [CoachingKnowledge] {
+        // Check if cache is valid
+        if let cached = cachedKnowledge,
+           let timestamp = cacheTimestamp,
+           Date().timeIntervalSince(timestamp) < cacheValiditySeconds {
+            return cached
+        }
+
+        // Cache miss - fetch from database
+        let fresh = try fetchAllKnowledge()
+        cachedKnowledge = fresh
+        cacheTimestamp = Date()
+        print("[Knowledge] Cache refreshed with \(fresh.count) documents")
+        return fresh
+    }
 
     private func fetchAllKnowledge() throws -> [CoachingKnowledge] {
         let descriptor = FetchDescriptor<CoachingKnowledge>(

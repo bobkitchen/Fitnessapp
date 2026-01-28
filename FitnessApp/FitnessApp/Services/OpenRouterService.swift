@@ -144,55 +144,86 @@ actor OpenRouterService {
     }
 
     /// Send a streaming chat completion request
-    func streamMessage(
+    /// NOTE: nonisolated to prevent actor isolation issues with AsyncThrowingStream
+    nonisolated func streamMessage(
         messages: [ChatMessage],
         model: AIModel = .default,
         systemPrompt: String? = nil
     ) -> AsyncThrowingStream<String, Error> {
-        // Capture values needed for the detached task
+        // Capture all needed values before creating the stream (outside actor isolation)
         let apiKey = KeychainService.getOpenRouterAPIKey()
-        let baseURL = self.baseURL
-        let session = self.session
+        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+
+        // Build request body upfront to avoid capturing self
+        var allMessages: [[String: Any]] = []
+        if let system = systemPrompt {
+            allMessages.append([
+                "role": "system",
+                "content": system
+            ])
+        }
+        for message in messages {
+            allMessages.append([
+                "role": message.role.rawValue,
+                "content": message.content
+            ])
+        }
+
+        let requestBody: [String: Any] = [
+            "model": model.rawValue,
+            "messages": allMessages,
+            "stream": true,
+            "temperature": 0.7,
+            "max_tokens": 4096
+        ]
+
+        // Serialize to Data here since [String: Any] is not Sendable
+        let requestData: Data
+        do {
+            requestData = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            return AsyncThrowingStream { continuation in
+                continuation.finish(throwing: error)
+            }
+        }
 
         return AsyncThrowingStream { continuation in
-            // Use detached task to avoid actor isolation issues with streaming
-            Task.detached {
+            // Use regular Task (not detached) to maintain continuation connectivity
+            // Task.detached was causing chunks to not be delivered to consumer
+            let task = Task { [requestData, apiKey, url] in
+                // Create isolated URLSession for this streaming request
+                let config = URLSessionConfiguration.default
+                config.timeoutIntervalForRequest = 120
+                config.timeoutIntervalForResource = 600
+                config.waitsForConnectivity = true
+                let session = URLSession(configuration: config)
+
+                // CRITICAL: Always clean up, even on cancellation
+                // Use invalidateAndCancel() instead of finishTasksAndInvalidate() because
+                // SSE connections don't close automatically after [DONE], causing hangs
+                defer {
+                    session.invalidateAndCancel()
+                }
+
                 do {
+                    // Check cancellation before starting
+                    try Task.checkCancellation()
+
                     guard let apiKey = apiKey else {
-                        throw OpenRouterError.noAPIKey
+                        continuation.finish(throwing: OpenRouterError.noAPIKey)
+                        return
                     }
 
-                    var allMessages: [[String: Any]] = []
-
-                    if let system = systemPrompt {
-                        allMessages.append([
-                            "role": "system",
-                            "content": system
-                        ])
-                    }
-
-                    for message in messages {
-                        allMessages.append([
-                            "role": message.role.rawValue,
-                            "content": message.content
-                        ])
-                    }
-
-                    let requestBody: [String: Any] = [
-                        "model": model.rawValue,
-                        "messages": allMessages,
-                        "stream": true,
-                        "temperature": 0.7,
-                        "max_tokens": 4096
-                    ]
-
-                    var request = URLRequest(url: baseURL)
+                    var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
                     request.setValue("AI Fitness Coach iOS", forHTTPHeaderField: "HTTP-Referer")
                     request.setValue("AI Fitness Coach", forHTTPHeaderField: "X-Title")
-                    request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+                    request.httpBody = requestData
+
+                    // Check cancellation before network request
+                    try Task.checkCancellation()
 
                     let (bytes, response) = try await session.bytes(for: request)
 
@@ -205,6 +236,7 @@ actor OpenRouterService {
                         // Try to collect error response body
                         var errorBody = ""
                         for try await line in bytes.lines {
+                            try Task.checkCancellation()
                             errorBody += line
                             // Limit error body collection to prevent hanging
                             if errorBody.count > 1000 { break }
@@ -220,12 +252,18 @@ actor OpenRouterService {
                     }
 
                     var hasReceivedContent = false
+                    var chunkCount = 0
 
+                    print("[Stream] Starting to read bytes.lines")
                     for try await line in bytes.lines {
+                        // CRITICAL: Check cancellation on every iteration
+                        try Task.checkCancellation()
+
                         if line.hasPrefix("data: ") {
                             let jsonString = String(line.dropFirst(6))
 
                             if jsonString == "[DONE]" {
+                                print("[Stream] Received [DONE] after \(chunkCount) chunks")
                                 break
                             }
 
@@ -233,10 +271,15 @@ actor OpenRouterService {
                                let chunk = try? JSONDecoder().decode(StreamChunk.self, from: data),
                                let content = chunk.choices.first?.delta.content {
                                 hasReceivedContent = true
+                                chunkCount += 1
+                                if chunkCount % 20 == 0 {
+                                    print("[Stream] Yielding chunk #\(chunkCount), length: \(content.count)")
+                                }
                                 continuation.yield(content)
                             }
                         }
                     }
+                    print("[Stream] Exited bytes.lines loop, hasContent: \(hasReceivedContent), chunks: \(chunkCount)")
 
                     // If we never received content, something went wrong
                     if !hasReceivedContent {
@@ -244,9 +287,18 @@ actor OpenRouterService {
                     }
 
                     continuation.finish()
+                    print("[Stream] Called continuation.finish()")
+                } catch is CancellationError {
+                    // Clean cancellation - just finish the stream
+                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+
+            // Handle external cancellation (when caller stops iterating)
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
@@ -541,3 +593,4 @@ enum OpenRouterError: LocalizedError {
         }
     }
 }
+

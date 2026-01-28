@@ -51,6 +51,21 @@ final class DailyMetrics {
     var vo2Max: Double?                     // Cardiorespiratory fitness ml/kg/min
     var weight: Double?                     // kg
     var bodyFatPercentage: Double?
+    var leanBodyMass: Double?               // Lean body mass (kg) - more relevant for athletes
+
+    // MARK: - Tier 1 Wellness Metrics
+    var heartRateRecovery: Int?             // 1-minute post-workout HR drop (bpm)
+    var vo2MaxTrendRaw: String?             // Trend direction for VO2 Max
+    var vo2MaxTrend: Trend {
+        get { Trend(rawValue: vo2MaxTrendRaw ?? "") ?? .stable }
+        set { vo2MaxTrendRaw = newValue.rawValue }
+    }
+    var hadCardioFitnessEvent: Bool?        // Significant VO2 change detected by Apple
+
+    // Cardiac health flags
+    var irregularHeartRateEvents: Int?      // Count of irregular rhythm events
+    var highHeartRateEvents: Int?           // Count of high HR events
+    var lowHeartRateEvents: Int?            // Count of low HR events
 
     // MARK: - Derived Scores
     var readinessScore: Double?             // 0-100 composite readiness
@@ -160,6 +175,44 @@ final class DailyMetrics {
         case 1.5...: return "High Risk"
         default: return "Detraining"
         }
+    }
+
+    // MARK: - Tier 1 Computed Properties
+
+    /// Heart rate recovery status (excellent >50 bpm, poor <30 bpm)
+    var heartRateRecoveryStatus: String {
+        guard let hrr = heartRateRecovery else { return "Unknown" }
+        switch hrr {
+        case 50...: return "Excellent"
+        case 40..<50: return "Good"
+        case 30..<40: return "Fair"
+        default: return "Poor"
+        }
+    }
+
+    /// Total cardiac events count
+    var totalCardiacEvents: Int {
+        (irregularHeartRateEvents ?? 0) +
+        (highHeartRateEvents ?? 0) +
+        (lowHeartRateEvents ?? 0)
+    }
+
+    /// Cardiac health status based on events
+    var cardiacHealthStatus: String {
+        if (irregularHeartRateEvents ?? 0) > 0 {
+            return "Review Recommended"
+        } else if totalCardiacEvents > 5 {
+            return "Elevated Activity"
+        } else if totalCardiacEvents > 0 {
+            return "Minor Activity"
+        }
+        return "Normal"
+    }
+
+    /// Body composition summary (lean mass percentage)
+    var leanMassPercentage: Double? {
+        guard let lean = leanBodyMass, let total = weight, total > 0 else { return nil }
+        return (lean / total) * 100
     }
 }
 

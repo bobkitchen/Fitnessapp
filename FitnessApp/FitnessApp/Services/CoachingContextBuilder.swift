@@ -1,17 +1,26 @@
 import Foundation
 import SwiftData
 
-/// Builds comprehensive context for AI coaching requests
-@MainActor
+/// Builds comprehensive context for AI coaching requests.
+/// Note: Database queries run on background context to avoid blocking UI.
+///
+/// THREAD SAFETY FIX: This class is NOT marked Sendable because ModelContainer
+/// is not Sendable. Instead, we capture the container at init and create fresh
+/// ModelContext instances for each operation. All database work happens on
+/// background contexts created from the container.
 final class CoachingContextBuilder {
 
-    private let modelContext: ModelContext
-    private lazy var knowledgeRetrieval: KnowledgeRetrievalService = {
-        KnowledgeRetrievalService(modelContext: modelContext)
-    }()
+    private let container: ModelContainer
 
     init(modelContext: ModelContext) {
-        self.modelContext = modelContext
+        self.container = modelContext.container
+    }
+
+    /// Creates a background ModelContext for database queries.
+    /// This prevents blocking the MainActor during heavy fetches.
+    /// Each context is independent and thread-safe for its own operations.
+    private func makeBackgroundContext() -> ModelContext {
+        ModelContext(container)
     }
 
     // MARK: - System Prompt
@@ -28,6 +37,9 @@ final class CoachingContextBuilder {
         - Sleep quality and its impact on training adaptation
         - Injury prevention and overtraining detection
         - Race preparation and tapering strategies
+        - Cardiorespiratory fitness (VO2 Max) and trends
+        - Heart rate recovery as a fitness/fatigue indicator
+        - Training zone distribution and polarization
 
         Guidelines for your responses:
         1. Be concise but thorough - athletes want actionable advice
@@ -37,6 +49,7 @@ final class CoachingContextBuilder {
         5. Flag any concerning patterns in recovery metrics
         6. Adapt advice to the athlete's goals and equipment availability
         7. Use appropriate sport-specific terminology
+        8. Consider cardiac health events if present - refer to medical professional for irregular rhythms
 
         Important training principles to follow:
         - Progressive overload with adequate recovery
@@ -45,6 +58,13 @@ final class CoachingContextBuilder {
         - ACWR (Acute:Chronic Workload Ratio) should stay between 0.8-1.3
         - HRV drops >15% below baseline suggest accumulated fatigue
         - Sleep quality affects training adaptation more than just duration
+
+        Additional Tier 1 metrics to consider:
+        - Heart Rate Recovery: >50 bpm drop in 1 min = excellent fitness; <30 bpm = fatigue indicator
+        - VO2 Max trends: Declining despite training = potential overtraining signal
+        - Cardiac events: Flag any irregular rhythm events for user awareness (recommend medical review)
+        - Zone distribution: Check for proper polarization (80/20 rule - most time in Z1-2, intensity in Z4-5)
+        - Lean body mass: More relevant than total weight for performance assessment
         """
     }
 
@@ -52,12 +72,15 @@ final class CoachingContextBuilder {
 
     /// Build full athlete context for a coaching request
     func buildContext() async throws -> String {
-        let profile = try fetchProfile()
-        let currentMetrics = try fetchCurrentMetrics()
-        let recentWorkouts = try fetchRecentWorkouts(days: 14)
-        let pmcTrend = try fetchPMCTrend(days: 7)
-        let wellnessData = try fetchWellnessData(days: 7)
-        let activeMemories = (try? fetchActiveMemories()) ?? []
+        // Use background context to avoid blocking UI
+        let backgroundContext = makeBackgroundContext()
+
+        let profile = try fetchProfile(context: backgroundContext)
+        let currentMetrics = try fetchCurrentMetrics(context: backgroundContext)
+        let recentWorkouts = try fetchRecentWorkouts(days: 14, context: backgroundContext)
+        let pmcTrend = try fetchPMCTrend(days: 7, context: backgroundContext)
+        let wellnessData = try fetchWellnessData(days: 7, context: backgroundContext)
+        let activeMemories = (try? fetchActiveMemories(context: backgroundContext)) ?? []
 
         var context = "## Current Athlete Status\n\n"
 
@@ -222,6 +245,100 @@ final class CoachingContextBuilder {
             context += "\n"
         }
 
+        // === Tier 1 Wellness Context Sections ===
+
+        // Cardio Fitness Trend (VO2 Max)
+        if let metrics = currentMetrics {
+            if let vo2 = metrics.vo2Max {
+                context += "### Cardio Fitness Trend\n"
+                context += "- Current VO2 Max: \(String(format: "%.1f", vo2)) mL/kg/min\n"
+                context += "- 30-day trend: \(metrics.vo2MaxTrend.displayName)\n"
+                if metrics.hadCardioFitnessEvent == true {
+                    context += "- Recent cardio fitness event detected by Apple Health\n"
+                }
+                context += "\n"
+            }
+        }
+
+        // Recovery Indicators (Heart Rate Recovery)
+        if let metrics = currentMetrics, let hrr = metrics.heartRateRecovery {
+            context += "### Recovery Indicators\n"
+            context += "- Heart Rate Recovery (post-workout): \(hrr) bpm drop in 1 min\n"
+            context += "- Status: \(metrics.heartRateRecoveryStatus)\n"
+
+            // Calculate baseline from recent data
+            let hrrValues = wellnessData.compactMap { $0.heartRateRecovery }
+            if hrrValues.count > 1 {
+                let avgHRR = hrrValues.reduce(0, +) / hrrValues.count
+                context += "- 7-day average: \(avgHRR) bpm\n"
+            }
+            context += "\n"
+        }
+
+        // Body Composition
+        if let metrics = currentMetrics {
+            let hasBodyData = metrics.weight != nil || metrics.leanBodyMass != nil
+            if hasBodyData {
+                context += "### Body Composition\n"
+                if let weight = metrics.weight {
+                    context += "- Weight: \(String(format: "%.1f", weight)) kg\n"
+                }
+                if let lbm = metrics.leanBodyMass {
+                    context += "- Lean Body Mass: \(String(format: "%.1f", lbm)) kg"
+                    if let percentage = metrics.leanMassPercentage {
+                        context += " (\(String(format: "%.0f", percentage))% of total)"
+                    }
+                    context += "\n"
+                }
+                context += "\n"
+            }
+        }
+
+        // Cardiac Health Flags
+        if let metrics = currentMetrics, metrics.totalCardiacEvents > 0 {
+            context += "### Cardiac Health Flags (7 Days)\n"
+            if let irregular = metrics.irregularHeartRateEvents, irregular > 0 {
+                context += "- Irregular rhythm events: \(irregular) ⚠️\n"
+            }
+            if let high = metrics.highHeartRateEvents, high > 0 {
+                context += "- High HR events: \(high)\n"
+            }
+            if let low = metrics.lowHeartRateEvents, low > 0 {
+                context += "- Low HR events: \(low)\n"
+            }
+            context += "- Status: \(metrics.cardiacHealthStatus)\n"
+            context += "\n"
+        }
+
+        // Zone Distribution (from recent workouts)
+        let zoneDistribution = calculateZoneDistribution(workouts: recentWorkouts)
+        if zoneDistribution.hasPowerZones || zoneDistribution.hasHRZones {
+            context += "### Zone Distribution (Last 7 Days)\n"
+
+            if zoneDistribution.hasHRZones {
+                context += "- HR zones: "
+                context += "Z1: \(Int(zoneDistribution.hrZones[0]))min, "
+                context += "Z2: \(Int(zoneDistribution.hrZones[1]))min, "
+                context += "Z3: \(Int(zoneDistribution.hrZones[2]))min, "
+                context += "Z4: \(Int(zoneDistribution.hrZones[3]))min, "
+                context += "Z5: \(Int(zoneDistribution.hrZones[4]))min\n"
+            }
+
+            if zoneDistribution.hasPowerZones {
+                context += "- Power zones: "
+                context += "Z1: \(Int(zoneDistribution.powerZones[0]))min, "
+                context += "Z2: \(Int(zoneDistribution.powerZones[1]))min, "
+                context += "Z3: \(Int(zoneDistribution.powerZones[2]))min, "
+                context += "Z4: \(Int(zoneDistribution.powerZones[3]))min, "
+                context += "Z5: \(Int(zoneDistribution.powerZones[4]))min\n"
+            }
+
+            if let polarization = zoneDistribution.polarizationIndex {
+                context += "- Polarization index: \(String(format: "%.0f", polarization))% low intensity\n"
+            }
+            context += "\n"
+        }
+
         // Recent workouts
         if !recentWorkouts.isEmpty {
             context += "### Recent Workouts (Last 14 Days)\n"
@@ -262,7 +379,9 @@ final class CoachingContextBuilder {
         // Build the standard user data context
         let userContext = try await buildContext()
 
-        // Retrieve relevant knowledge for the question
+        // Retrieve relevant knowledge for the question using background context
+        let backgroundContext = makeBackgroundContext()
+        let knowledgeRetrieval = KnowledgeRetrievalService(modelContext: backgroundContext)
         let retrievedKnowledge = try knowledgeRetrieval.retrieveFormattedKnowledge(for: question)
 
         // Combine contexts
@@ -279,7 +398,9 @@ final class CoachingContextBuilder {
     func buildQuickContext(for question: String) async throws -> String {
         let quickContext = try await buildQuickContext()
 
-        // Retrieve relevant knowledge (limit to 3 for quick context)
+        // Retrieve relevant knowledge (limit to 3 for quick context) using background context
+        let backgroundContext = makeBackgroundContext()
+        let knowledgeRetrieval = KnowledgeRetrievalService(modelContext: backgroundContext)
         let documents = try knowledgeRetrieval.retrieveKnowledge(for: question)
         let topDocuments = Array(documents.prefix(3))
         let retrievedKnowledge = knowledgeRetrieval.formatKnowledgeForContext(topDocuments)
@@ -295,7 +416,8 @@ final class CoachingContextBuilder {
 
     /// Build a lightweight context for quick questions
     func buildQuickContext() async throws -> String {
-        let currentMetrics = try fetchCurrentMetrics()
+        let backgroundContext = makeBackgroundContext()
+        let currentMetrics = try fetchCurrentMetrics(context: backgroundContext)
 
         var context = "Current Status: "
 
@@ -317,40 +439,43 @@ final class CoachingContextBuilder {
 
     // MARK: - Data Fetching
 
-    private func fetchProfile() throws -> AthleteProfile? {
+    private func fetchProfile(context: ModelContext) throws -> AthleteProfile? {
         let descriptor = FetchDescriptor<AthleteProfile>()
-        return try modelContext.fetch(descriptor).first
+        return try context.fetch(descriptor).first
     }
 
-    private func fetchCurrentMetrics() throws -> DailyMetrics? {
+    private func fetchCurrentMetrics(context: ModelContext) throws -> DailyMetrics? {
         let today = Calendar.current.startOfDay(for: Date())
-        let descriptor = FetchDescriptor<DailyMetrics>(
-            predicate: #Predicate { $0.date <= today },
+        var descriptor = FetchDescriptor<DailyMetrics>(
+            predicate: #Predicate<DailyMetrics> { $0.date <= today },
             sortBy: [SortDescriptor(\.date, order: .reverse)]
         )
-        return try modelContext.fetch(descriptor).first
+        descriptor.fetchLimit = 1  // Only need the most recent
+        return try context.fetch(descriptor).first
     }
 
-    private func fetchPMCTrend(days: Int) throws -> [DailyMetrics] {
+    private func fetchPMCTrend(days: Int, context: ModelContext) throws -> [DailyMetrics] {
         let startDate = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
-        let descriptor = FetchDescriptor<DailyMetrics>(
-            predicate: #Predicate { $0.date >= startDate },
+        var descriptor = FetchDescriptor<DailyMetrics>(
+            predicate: #Predicate<DailyMetrics> { $0.date >= startDate },
             sortBy: [SortDescriptor(\.date, order: .forward)]
         )
-        return try modelContext.fetch(descriptor)
+        descriptor.fetchLimit = days + 1  // Bound the query
+        return try context.fetch(descriptor)
     }
 
-    private func fetchWellnessData(days: Int) throws -> [DailyMetrics] {
-        return try fetchPMCTrend(days: days)
+    private func fetchWellnessData(days: Int, context: ModelContext) throws -> [DailyMetrics] {
+        return try fetchPMCTrend(days: days, context: context)
     }
 
-    private func fetchRecentWorkouts(days: Int) throws -> [WorkoutRecord] {
+    private func fetchRecentWorkouts(days: Int, context: ModelContext) throws -> [WorkoutRecord] {
         let startDate = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
-        let descriptor = FetchDescriptor<WorkoutRecord>(
-            predicate: #Predicate { $0.startDate >= startDate },
+        var descriptor = FetchDescriptor<WorkoutRecord>(
+            predicate: #Predicate<WorkoutRecord> { $0.startDate >= startDate },
             sortBy: [SortDescriptor(\.startDate, order: .reverse)]
         )
-        return try modelContext.fetch(descriptor)
+        descriptor.fetchLimit = 20  // Reasonable limit for context
+        return try context.fetch(descriptor)
     }
 
     private func calculateWeeklyTSS(workouts: [WorkoutRecord], weeksAgo: Int) -> Double {
@@ -358,7 +483,8 @@ final class CoachingContextBuilder {
         let now = Date()
 
         let weekStart = calendar.date(byAdding: .weekOfYear, value: -weeksAgo, to: now)!
-        let weekStartDay = calendar.startOfWeek(for: weekStart)
+        // Get start of week (Sunday)
+        let weekStartDay = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: weekStart))!
         let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStartDay)!
 
         return workouts
@@ -366,12 +492,13 @@ final class CoachingContextBuilder {
             .reduce(0) { $0 + $1.tss }
     }
 
-    private func fetchActiveMemories() throws -> [UserMemory] {
+    private func fetchActiveMemories(context: ModelContext) throws -> [UserMemory] {
         let now = Date()
-        let descriptor = FetchDescriptor<UserMemory>(
+        var descriptor = FetchDescriptor<UserMemory>(
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
-        let allMemories = try modelContext.fetch(descriptor)
+        descriptor.fetchLimit = 50  // Reasonable limit for memories
+        let allMemories = try context.fetch(descriptor)
 
         // Filter to only active (non-expired) memories
         return allMemories.filter { memory in
@@ -380,6 +507,60 @@ final class CoachingContextBuilder {
             }
             return true
         }
+    }
+
+    // MARK: - Zone Distribution Calculation
+
+    private func calculateZoneDistribution(workouts: [WorkoutRecord]) -> ZoneDistributionResult {
+        var result = ZoneDistributionResult()
+
+        // Get workouts from last 7 days only
+        let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+        let recentWorkouts = workouts.filter { $0.startDate >= sevenDaysAgo }
+
+        // Aggregate HR zone minutes
+        for workout in recentWorkouts {
+            if let hrZones = workout.heartRateZoneDistribution {
+                for i in 0..<5 {
+                    let zoneKey = "zone\(i + 1)"
+                    result.hrZones[i] += hrZones[zoneKey] ?? 0
+                }
+            }
+        }
+
+        // Aggregate power zone minutes
+        for workout in recentWorkouts {
+            if let powerZones = workout.powerZoneDistribution {
+                for i in 0..<5 {
+                    let zoneKey = "zone\(i + 1)"
+                    result.powerZones[i] += powerZones[zoneKey] ?? 0
+                }
+            }
+        }
+
+        // Calculate polarization index (Z1+Z2 as percentage of total)
+        let totalHRMinutes = result.hrZones.reduce(0, +)
+        if totalHRMinutes > 0 {
+            let lowIntensity = result.hrZones[0] + result.hrZones[1]
+            result.polarizationIndex = (lowIntensity / totalHRMinutes) * 100
+        }
+
+        return result
+    }
+}
+
+/// Result of zone distribution calculation
+struct ZoneDistributionResult {
+    var hrZones: [Double] = [0, 0, 0, 0, 0]      // Z1-Z5 minutes
+    var powerZones: [Double] = [0, 0, 0, 0, 0]  // Z1-Z5 minutes
+    var polarizationIndex: Double?
+
+    var hasHRZones: Bool {
+        hrZones.reduce(0, +) > 0
+    }
+
+    var hasPowerZones: Bool {
+        powerZones.reduce(0, +) > 0
     }
 }
 

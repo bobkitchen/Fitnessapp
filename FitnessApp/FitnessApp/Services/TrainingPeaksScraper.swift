@@ -13,6 +13,7 @@ struct TPWorkoutData: Sendable {
     let averagePower: Int?
     let averagePace: Double?            // seconds per km
     let title: String?
+    let routeCoordinates: [(latitude: Double, longitude: Double)]?
 
     /// Map TP activity type to our ActivityCategory
     var activityCategory: ActivityCategory {
@@ -185,7 +186,8 @@ actor TrainingPeaksScraper {
             averageHR: nil,
             averagePower: nil,
             averagePace: nil,
-            title: nil
+            title: nil,
+            routeCoordinates: nil
         )
     }
 
@@ -202,7 +204,8 @@ actor TrainingPeaksScraper {
             averageHR: data.averageHR,
             averagePower: data.averagePower,
             averagePace: data.averagePace,
-            title: data.title
+            title: data.title,
+            routeCoordinates: data.routeCoordinates
         )
     }
 
@@ -430,12 +433,17 @@ actor TrainingPeaksScraper {
             return jsonData
         }
 
-        // Strategy 2: Parse HTML directly for workout metrics
+        // Strategy 2: Look for inline JavaScript data objects (e.g., publicActivityWrapper)
+        if let jsData = try? extractInlineJavaScriptData(from: html) {
+            return jsData
+        }
+
+        // Strategy 3: Parse HTML directly for workout metrics
         if let parsedData = try? parseHTMLMetrics(from: html) {
             return parsedData
         }
 
-        // Strategy 3: Look for meta tags and Open Graph data
+        // Strategy 4: Look for meta tags and Open Graph data
         if let metaData = try? parseMetaTags(from: html) {
             return metaData
         }
@@ -463,6 +471,104 @@ actor TrainingPeaksScraper {
         }
 
         return try parseJSONWorkout(json)
+    }
+
+    /// Extract workout data from inline JavaScript data objects (e.g., publicActivityWrapper)
+    private func extractInlineJavaScriptData(from html: String) throws -> TPWorkoutData {
+        let objectNames = [
+            "publicActivityWrapper",
+            "activityData",
+            "workoutData",
+            "sharedWorkout"
+        ]
+
+        for name in objectNames {
+            guard let nameRange = html.range(of: name, options: .caseInsensitive) else { continue }
+
+            // Find the first '{' after the object name
+            let searchStart = nameRange.upperBound
+            guard let braceStart = html[searchStart...].firstIndex(of: "{") else { continue }
+
+            // Extract the JSON object using brace counting
+            guard let jsonString = extractBalancedJSON(from: html, startingAt: braceStart) else { continue }
+
+            guard let jsonData = jsonString.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { continue }
+
+            print("[TPScraper] Found inline JS data object '\(name)' with keys: \(json.keys.sorted())")
+
+            // Extract route coordinates from top-level (workoutSampleList may be at top level)
+            let topLevelRoute = Self.extractRouteCoordinates(from: json)
+
+            // Try to parse workout data directly from the object
+            if let result = try? parseJSONWorkout(json) {
+                return result
+            }
+
+            // Workout data might be nested under a key
+            for (key, value) in json {
+                if let nested = value as? [String: Any],
+                   nested.keys.contains(where: { $0.lowercased() == "tss" || $0.lowercased() == "if" }),
+                   var result = try? parseJSONWorkout(nested) {
+                    print("[TPScraper] Found workout data in nested key '\(key)'")
+                    // If nested parse didn't find route but top-level had it, merge
+                    if result.routeCoordinates == nil, let route = topLevelRoute {
+                        result = TPWorkoutData(
+                            tss: result.tss,
+                            intensityFactor: result.intensityFactor,
+                            duration: result.duration,
+                            distance: result.distance,
+                            activityType: result.activityType,
+                            startDate: result.startDate,
+                            averageHR: result.averageHR,
+                            averagePower: result.averagePower,
+                            averagePace: result.averagePace,
+                            title: result.title,
+                            routeCoordinates: route
+                        )
+                    }
+                    return result
+                }
+            }
+        }
+
+        throw TPScraperError.noDataFound
+    }
+
+    /// Extract a balanced JSON object from a string by counting braces
+    private func extractBalancedJSON(from string: String, startingAt start: String.Index) -> String? {
+        var depth = 0
+        var index = start
+        var inString = false
+        var escaped = false
+        var charCount = 0
+        let maxChars = 100_000  // Safety limit
+
+        while index < string.endIndex && charCount < maxChars {
+            let char = string[index]
+
+            if escaped {
+                escaped = false
+            } else if char == "\\" && inString {
+                escaped = true
+            } else if char == "\"" {
+                inString = !inString
+            } else if !inString {
+                if char == "{" {
+                    depth += 1
+                } else if char == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        return String(string[start...index])
+                    }
+                }
+            }
+
+            index = string.index(after: index)
+            charCount += 1
+        }
+
+        return nil
     }
 
     /// Parse workout metrics directly from HTML
@@ -670,7 +776,8 @@ actor TrainingPeaksScraper {
             averageHR: averageHR,
             averagePower: averagePower,
             averagePace: averagePace,
-            title: title
+            title: title,
+            routeCoordinates: nil
         )
     }
 
@@ -760,19 +867,72 @@ actor TrainingPeaksScraper {
             }
         }
 
-        // Extract date (format: "on 1/25" or "on 01/25")
+        // Extract date and time
+        // First try: look for ISO datetime strings in the full HTML (e.g. from embedded JSON)
         var workoutDate = Date()
-        if let regex = try? NSRegularExpression(pattern: #"on\s+(\d{1,2})/(\d{1,2})"#, options: []),
-           let match = regex.firstMatch(in: description, options: [], range: NSRange(description.startIndex..., in: description)),
-           let monthRange = Range(match.range(at: 1), in: description),
-           let dayRange = Range(match.range(at: 2), in: description),
-           let month = Int(description[monthRange]),
-           let day = Int(description[dayRange]) {
-            var components = Calendar.current.dateComponents([.year], from: Date())
-            components.month = month
-            components.day = day
-            if let date = Calendar.current.date(from: components) {
-                workoutDate = date
+        let dateTimePatterns = [
+            #"\"startTime\"[:\s]*\"([^\"]+)\""#,
+            #"\"startDate\"[:\s]*\"([^\"]+)\""#,
+            #"\"completedDate\"[:\s]*\"([^\"]+)\""#,
+            #"\"workoutDay\"[:\s]*\"([^\"]+)\""#,
+            #"datetime=\"([^\"]+)\""#
+        ]
+        let isoFormatter = ISO8601DateFormatter()
+        var foundDateTime = false
+        for pattern in dateTimePatterns {
+            if let dateString = extractString(from: html, pattern: pattern) {
+                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = isoFormatter.date(from: dateString) {
+                    workoutDate = date
+                    foundDateTime = true
+                    break
+                }
+                isoFormatter.formatOptions = [.withInternetDateTime]
+                if let date = isoFormatter.date(from: dateString) {
+                    workoutDate = date
+                    foundDateTime = true
+                    break
+                }
+            }
+        }
+        // Fallback: extract date from description (format: "on 1/25" or "on 01/25") — no time info
+        if !foundDateTime {
+            if let regex = try? NSRegularExpression(pattern: #"on\s+(\d{1,2})/(\d{1,2})"#, options: []),
+               let match = regex.firstMatch(in: description, options: [], range: NSRange(description.startIndex..., in: description)),
+               let monthRange = Range(match.range(at: 1), in: description),
+               let dayRange = Range(match.range(at: 2), in: description),
+               let month = Int(description[monthRange]),
+               let day = Int(description[dayRange]) {
+                var components = Calendar.current.dateComponents([.year], from: Date())
+                components.month = month
+                components.day = day
+                if let date = Calendar.current.date(from: components) {
+                    workoutDate = date
+                }
+            }
+        }
+
+        // Extract IF from description or full HTML
+        var intensityFactor: Double?
+        let ifPatterns = [
+            #"(?:IF)[:\s]*(\d+(?:\.\d+)?)"#,
+            #"(\d+\.\d+)\s*IF\b"#,
+            #"\"intensityFactor\"[:\s]*(\d+(?:\.\d+)?)"#,
+            #"\"if\"[:\s]*(\d+(?:\.\d+)?)"#
+        ]
+        // Try description first, then full HTML for IF
+        for pattern in ifPatterns {
+            if let value = extractDouble(from: description, pattern: pattern), value > 0, value <= 2.0 {
+                intensityFactor = value
+                break
+            }
+        }
+        if intensityFactor == nil {
+            for pattern in ifPatterns {
+                if let value = extractDouble(from: html, pattern: pattern), value > 0, value <= 2.0 {
+                    intensityFactor = value
+                    break
+                }
             }
         }
 
@@ -789,11 +949,11 @@ actor TrainingPeaksScraper {
             activityType = "Swimming"
         }
 
-        print("[TPScraper] Parsed from meta tags: TSS=\(extractedTSS), duration=\(duration)s, distance=\(distance ?? 0)m, date=\(workoutDate)")
+        print("[TPScraper] Parsed from meta tags: TSS=\(extractedTSS), IF=\(intensityFactor ?? -1), duration=\(duration)s, distance=\(distance ?? 0)m, date=\(workoutDate)")
 
         return TPWorkoutData(
             tss: extractedTSS,
-            intensityFactor: nil,
+            intensityFactor: intensityFactor,
             duration: duration,
             distance: distance,
             activityType: activityType,
@@ -801,47 +961,130 @@ actor TrainingPeaksScraper {
             averageHR: nil,
             averagePower: nil,
             averagePace: nil,
-            title: title.isEmpty ? nil : title
+            title: title.isEmpty ? nil : title,
+            routeCoordinates: nil
         )
     }
 
     /// Parse JSON workout data structure
     private func parseJSONWorkout(_ json: [String: Any]) throws -> TPWorkoutData {
-        guard let tss = json["tss"] as? Double ?? (json["trainingStressScore"] as? Double) else {
+        // TSS can appear under various keys depending on sport type
+        guard let tss = jsonDouble(json, keys: ["tss", "trainingStressScore", "sTss", "rTss", "hrTss"]) else {
             throw TPScraperError.parsingError("No TSS in JSON")
         }
 
-        let duration = (json["duration"] as? Double) ??
-                       (json["durationSeconds"] as? Double) ??
-                       (json["movingTime"] as? Double) ??
-                       3600
+        let duration = jsonDouble(json, keys: ["duration", "durationSeconds", "movingTime"]) ?? 3600
 
-        let activityType = (json["activityType"] as? String) ??
-                          (json["sport"] as? String) ??
-                          (json["type"] as? String) ??
-                          "Workout"
+        let activityType = jsonString(json, keys: ["activityType", "sport", "type"]) ?? "Workout"
 
         var startDate = Date()
-        if let dateString = json["startTime"] as? String ?? json["startDate"] as? String {
+        if let dateString = jsonString(json, keys: ["startTime", "startDate", "workoutDay", "completedDate"]) {
             let formatter = ISO8601DateFormatter()
+            // Try with fractional seconds first, then without
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             if let date = formatter.date(from: dateString) {
                 startDate = date
+            } else {
+                formatter.formatOptions = [.withInternetDateTime]
+                if let date = formatter.date(from: dateString) {
+                    startDate = date
+                }
             }
         }
 
+        let intensityFactor = jsonDouble(json, keys: ["intensityFactor", "if"])
+        let distance = jsonDouble(json, keys: ["distance", "distanceMeters"])
+        let avgHR = jsonDouble(json, keys: ["averageHeartRate", "avgHr", "heartRateAverage"])
+        let avgPower = jsonDouble(json, keys: ["averagePower", "normalizedPower", "avgPower"])
+        let avgPace = jsonDouble(json, keys: ["averagePace"])
+
+        // Extract GPS route from workoutSampleList
+        let routeCoordinates = Self.extractRouteCoordinates(from: json)
+
         return TPWorkoutData(
             tss: tss,
-            intensityFactor: json["intensityFactor"] as? Double ?? json["if"] as? Double,
+            intensityFactor: intensityFactor,
             duration: duration,
-            distance: json["distance"] as? Double ?? json["distanceMeters"] as? Double,
+            distance: distance,
             activityType: activityType,
             startDate: startDate,
-            averageHR: (json["averageHeartRate"] as? Double).map { Int($0) },
-            averagePower: (json["averagePower"] as? Double).map { Int($0) } ??
-                         (json["normalizedPower"] as? Double).map { Int($0) },
-            averagePace: json["averagePace"] as? Double,
-            title: json["title"] as? String ?? json["name"] as? String
+            averageHR: avgHR.map { Int($0) },
+            averagePower: avgPower.map { Int($0) },
+            averagePace: avgPace,
+            title: jsonString(json, keys: ["title", "name"]),
+            routeCoordinates: routeCoordinates
         )
+    }
+
+    /// Extract GPS route coordinates from a JSON dictionary containing workoutSampleList
+    /// Each sample has values array: [cadence, elevation, speed, power, heartRate, distance, positionLat, positionLong]
+    private static func extractRouteCoordinates(from json: [String: Any]) -> [(latitude: Double, longitude: Double)]? {
+        guard let samples = json["workoutSampleList"] as? [[String: Any]] else { return nil }
+
+        var coords: [(latitude: Double, longitude: Double)] = []
+        for sample in samples {
+            guard let values = sample["values"] as? [Any], values.count >= 8 else { continue }
+            let lat: Double?
+            let lng: Double?
+            if let d = values[6] as? Double { lat = d }
+            else if let n = values[6] as? NSNumber { lat = n.doubleValue }
+            else { lat = nil }
+            if let d = values[7] as? Double { lng = d }
+            else if let n = values[7] as? NSNumber { lng = n.doubleValue }
+            else { lng = nil }
+            guard let latitude = lat, let longitude = lng,
+                  latitude != 0, longitude != 0 else { continue }
+            coords.append((latitude, longitude))
+        }
+        return coords.isEmpty ? nil : coords
+    }
+
+    /// Safely extract a Double from a JSON dictionary, trying multiple keys.
+    /// Handles both Double and Int JSON number types.
+    /// Uses case-insensitive key matching to handle varying TP JSON casing (e.g. "sTSS" vs "sTss").
+    private func jsonDouble(_ json: [String: Any], keys: [String]) -> Double? {
+        // First try exact key match (fast path)
+        for key in keys {
+            if let value = json[key] as? Double {
+                return value
+            }
+            if let value = json[key] as? Int {
+                return Double(value)
+            }
+            if let value = json[key] as? NSNumber {
+                return value.doubleValue
+            }
+        }
+        // Fall back to case-insensitive key match
+        let lowercasedKeys = keys.map { $0.lowercased() }
+        for (jsonKey, jsonValue) in json {
+            let lk = jsonKey.lowercased()
+            if lowercasedKeys.contains(lk) {
+                if let value = jsonValue as? Double { return value }
+                if let value = jsonValue as? Int { return Double(value) }
+                if let value = jsonValue as? NSNumber { return value.doubleValue }
+            }
+        }
+        return nil
+    }
+
+    /// Safely extract a String from a JSON dictionary, trying multiple keys with case-insensitive matching.
+    private func jsonString(_ json: [String: Any], keys: [String]) -> String? {
+        // Exact match first
+        for key in keys {
+            if let value = json[key] as? String {
+                return value
+            }
+        }
+        // Case-insensitive fallback
+        let lowercasedKeys = keys.map { $0.lowercased() }
+        for (jsonKey, jsonValue) in json {
+            if lowercasedKeys.contains(jsonKey.lowercased()),
+               let value = jsonValue as? String {
+                return value
+            }
+        }
+        return nil
     }
 
     // MARK: - Regex Helpers

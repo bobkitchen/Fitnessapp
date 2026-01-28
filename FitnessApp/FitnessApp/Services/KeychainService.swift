@@ -13,6 +13,7 @@ nonisolated struct KeychainService: Sendable {
         case itemNotFound
         case unexpectedStatus(OSStatus)
         case invalidData
+        case invalidAPIKeyFormat
     }
 
     // MARK: - Save
@@ -104,7 +105,21 @@ extension KeychainService {
 
     @MainActor
     static func saveOpenRouterAPIKey(_ key: String) throws {
-        try save(key: .openRouterAPIKey, value: key)
+        // FIX: Validate API key format before saving
+        // OpenRouter keys typically start with "sk-or-" and have a minimum length
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedKey.isEmpty else {
+            throw KeychainError.invalidAPIKeyFormat
+        }
+
+        // OpenRouter API keys should start with "sk-or-" prefix
+        // Allow keys that start with "sk-" as some may have different prefixes
+        guard trimmedKey.hasPrefix("sk-") && trimmedKey.count >= 20 else {
+            throw KeychainError.invalidAPIKeyFormat
+        }
+
+        try save(key: .openRouterAPIKey, value: trimmedKey)
         UserDefaults.standard.set(true, forKey: "hasOpenRouterAPIKey")
     }
 

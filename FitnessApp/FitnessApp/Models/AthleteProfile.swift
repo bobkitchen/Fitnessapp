@@ -37,6 +37,9 @@ final class AthleteProfile {
     var hasCyclingPowerMeter: Bool
     var hasRunningPowerMeter: Bool
 
+    // Profile Photo
+    var profilePhotoData: Data?
+
     init(
         id: UUID = UUID(),
         name: String = "",
@@ -112,6 +115,20 @@ final class AthleteProfile {
     /// Heart rate reserve (HRR)
     var heartRateReserve: Int {
         maxHeartRate - restingHeartRate
+    }
+
+    /// Get initials for avatar placeholder (up to 2 characters)
+    var initials: String {
+        let components = name.trimmingCharacters(in: .whitespaces).split(separator: " ")
+        if components.isEmpty {
+            return ""
+        } else if components.count == 1 {
+            return String(components[0].prefix(1)).uppercased()
+        } else {
+            let first = String(components[0].prefix(1))
+            let last = String(components[components.count - 1].prefix(1))
+            return (first + last).uppercased()
+        }
     }
 
     // MARK: - Heart Rate Zone Calculations

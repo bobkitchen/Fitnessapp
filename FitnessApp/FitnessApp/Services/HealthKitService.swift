@@ -2,6 +2,7 @@ import Foundation
 import HealthKit
 import Observation
 import UIKit
+import CoreLocation
 
 @Observable
 final class HealthKitService {
@@ -775,6 +776,77 @@ final class HealthKitService {
 
             healthStore.execute(query)
         }
+    }
+
+    // MARK: - Workout Route Queries
+
+    /// Fetch GPS route locations for an HKWorkout
+    func fetchWorkoutRoute(for workout: HKWorkout) async throws -> [CLLocation] {
+        let routes = try await fetchWorkoutRouteObjects(for: workout)
+        guard let route = routes.first else { return [] }
+        return try await fetchRouteLocations(from: route)
+    }
+
+    /// Fetch HKWorkoutRoute objects linked to a workout
+    private func fetchWorkoutRouteObjects(for workout: HKWorkout) async throws -> [HKWorkoutRoute] {
+        let routeType = HKSeriesType.workoutRoute()
+        let predicate = HKQuery.predicateForObjects(from: workout)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: routeType,
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: nil
+            ) { _, samples, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                let routes = samples as? [HKWorkoutRoute] ?? []
+                continuation.resume(returning: routes)
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    /// Extract CLLocation array from an HKWorkoutRoute
+    private func fetchRouteLocations(from route: HKWorkoutRoute) async throws -> [CLLocation] {
+        try await withCheckedThrowingContinuation { continuation in
+            var allLocations: [CLLocation] = []
+
+            let query = HKWorkoutRouteQuery(route: route) { _, locations, done, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                if let locations {
+                    allLocations.append(contentsOf: locations)
+                }
+
+                if done {
+                    continuation.resume(returning: allLocations)
+                }
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    /// Downsample locations to a target number of points for storage efficiency
+    static func downsampleLocations(_ locations: [CLLocation], maxPoints: Int = 300) -> [CLLocation] {
+        guard locations.count > maxPoints else { return locations }
+
+        let step = Double(locations.count - 1) / Double(maxPoints - 1)
+        var result: [CLLocation] = []
+        result.reserveCapacity(maxPoints)
+
+        for i in 0..<maxPoints {
+            let index = Int((Double(i) * step).rounded())
+            result.append(locations[min(index, locations.count - 1)])
+        }
+
+        return result
     }
 
     // MARK: - Helper Methods

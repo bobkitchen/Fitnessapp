@@ -27,11 +27,12 @@ enum MemoryExtractionService {
                 return
             }
 
-            // 2. Save on MainActor with fresh context
-            await MainActor.run {
-                let context = ModelContext(container)
-                saveMemories(memories, userMessage: userMessage, context: context)
-            }
+            // 2. Save with background context
+            // CRITICAL: Do NOT use MainActor.run here - it causes deadlock!
+            // SwiftData ModelContext created in a detached task is safe to use
+            // within that task. The context.save() is thread-safe.
+            let context = ModelContext(container)
+            saveMemories(memories, userMessage: userMessage, context: context)
         }
     }
 
@@ -102,7 +103,9 @@ enum MemoryExtractionService {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         let session = URLSession(configuration: config)
-        defer { session.finishTasksAndInvalidate() }
+        // Use invalidateAndCancel() instead of finishTasksAndInvalidate()
+        // to prevent hanging if the API request stalls
+        defer { session.invalidateAndCancel() }
 
         var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
         request.httpMethod = "POST"
@@ -140,25 +143,59 @@ enum MemoryExtractionService {
         }
     }
 
-    @MainActor
-    private static func saveMemories(
+    /// Save extracted memories to SwiftData
+    /// NOTE: This runs on a background thread (from Task.detached).
+    /// Must be nonisolated to avoid MainActor deadlock with SwiftUI view updates.
+    /// SwiftData ModelContext created from container in a detached task is thread-safe.
+    nonisolated private static func saveMemories(
         _ memories: [ExtractedMemoryData],
         userMessage: String,
         context: ModelContext
     ) {
         // Fetch existing once
         let descriptor = FetchDescriptor<UserMemory>()
-        let existing = (try? context.fetch(descriptor)) ?? []
+        let existing: [UserMemory]
+        do {
+            existing = try context.fetch(descriptor)
+        } catch {
+            print("[Memory] ERROR: Failed to fetch existing memories: \(error)")
+            return
+        }
+
+        // Create a set of content hashes for efficient duplicate checking
+        let existingHashes = Set(existing.map { $0.content.lowercased().hashValue })
         let existingContents = existing.map { $0.content.lowercased() }
 
         var saved = 0
+        var skippedEmpty = 0
+        var skippedDuplicate = 0
+
         for extracted in memories {
-            // Skip duplicates
+            // FIX: Skip empty or whitespace-only content
+            let trimmed = extracted.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.count >= 10 else {
+                skippedEmpty += 1
+                continue
+            }
+
+            // FIX: Use content hash for faster duplicate detection
             let lower = extracted.content.lowercased()
+            let contentHash = lower.hashValue
+
+            // Quick hash check first (O(1))
+            if existingHashes.contains(contentHash) {
+                skippedDuplicate += 1
+                continue
+            }
+
+            // Fuzzy duplicate check (substring matching)
             let isDupe = existingContents.contains {
                 $0.contains(String(lower.prefix(50))) || lower.contains(String($0.prefix(50)))
             }
-            if isDupe { continue }
+            if isDupe {
+                skippedDuplicate += 1
+                continue
+            }
 
             // Calculate expiration
             var expiresAt: Date?
@@ -177,9 +214,17 @@ enum MemoryExtractionService {
             saved += 1
         }
 
+        // FIX: Replace silent failure with proper logging
         if saved > 0 {
-            try? context.save()
-            print("[Memory] Saved \(saved) memories")
+            do {
+                try context.save()
+                print("[Memory] Saved \(saved) memories (skipped: \(skippedDuplicate) duplicates, \(skippedEmpty) empty)")
+            } catch {
+                print("[Memory] ERROR: Failed to save memories: \(error)")
+                // Note: Consider adding to error tracking service in production
+            }
+        } else if skippedDuplicate > 0 || skippedEmpty > 0 {
+            print("[Memory] No new memories to save (skipped: \(skippedDuplicate) duplicates, \(skippedEmpty) empty)")
         }
     }
 }

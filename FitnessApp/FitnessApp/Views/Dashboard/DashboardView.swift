@@ -5,6 +5,7 @@ import SwiftData
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitService.self) private var healthKitService
+    @Environment(ReadinessStateService.self) private var readinessState: ReadinessStateService?
     @Query(sort: [SortDescriptor(\DailyMetrics.date, order: .reverse)]) private var dailyMetrics: [DailyMetrics]
     @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)]) private var recentWorkouts: [WorkoutRecord]
     @Query private var profiles: [AthleteProfile]
@@ -15,6 +16,7 @@ struct DashboardView: View {
     @State private var hasPerformedInitialSync = false
     @State private var showReadinessDetail = false
     @State private var showGradeExplanation = false
+    @State private var showingProfileSheet = false
 
     private var profile: AthleteProfile? { profiles.first }
     private var todayMetrics: DailyMetrics? {
@@ -32,6 +34,21 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Layout.sectionSpacing) {
+                    // Custom inline header (scrolls with content)
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: Spacing.xxxs) {
+                            Text("Today")
+                                .font(.system(size: 28, weight: .bold, design: .default))
+                                .foregroundStyle(Color.textPrimary)
+                            Text(Date(), format: .dateTime.weekday(.wide).month(.abbreviated).day())
+                                .font(AppFont.bodySmall)
+                                .foregroundStyle(Color.textSecondary)
+                        }
+                        Spacer()
+                        ProfileAvatarButton(showingProfile: $showingProfileSheet, size: 40)
+                    }
+                    .padding(.bottom, Spacing.md)
+
                     // Hero Readiness Ring (single source of truth for readiness score)
                     heroReadinessSection
                         .animatedAppearance(index: 0)
@@ -47,10 +64,13 @@ struct DashboardView: View {
                 .padding(Layout.screenPadding)
             }
             .background(Color.backgroundPrimary)
-            .navigationTitle("Dashboard")
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.backgroundPrimary, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            // Chat icon removed - Coach tab available in navigation
+            .sheet(isPresented: $showingProfileSheet) {
+                ProfileSheetView()
+            }
             .sheet(isPresented: $showReadinessDetail) {
                 if let result = calculateReadiness() {
                     ReadinessDetailSheet(result: result)
@@ -88,6 +108,16 @@ struct DashboardView: View {
                 onTap: { showReadinessDetail = true },
                 onInfoTap: { showGradeExplanation = true }
             )
+            .onAppear {
+                // Update the shared readiness state for profile avatar border color
+                readinessState?.currentScore = result.score
+            }
+            .onChange(of: todayMetrics?.hrvRMSSD) { _, _ in
+                // Recalculate and update readiness state when metrics change
+                if let newResult = calculateReadiness() {
+                    readinessState?.currentScore = newResult.score
+                }
+            }
         }
     }
 
@@ -913,4 +943,6 @@ private struct ImprovementTip: View {
             DailyMetrics.self,
             WorkoutRecord.self
         ], inMemory: true)
+        .environment(HealthKitService())
+        .environment(ReadinessStateService())
 }
