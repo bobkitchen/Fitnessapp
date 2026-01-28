@@ -5,7 +5,7 @@ import MapKit
 
 /// Detailed view of a single workout
 struct WorkoutDetailView: View {
-    let workout: WorkoutRecord
+    @Bindable var workout: WorkoutRecord
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitService.self) private var healthKitService
@@ -35,6 +35,9 @@ struct WorkoutDetailView: View {
 
                     // Key metrics
                     metricsGrid
+
+                    // Quick verify with TrainingPeaks
+                    quickVerifySection
 
                     // Heart rate zones (if available)
                     if workout.heartRateZoneDistribution != nil {
@@ -173,6 +176,35 @@ struct WorkoutDetailView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Quick Verify Section
+
+    @ViewBuilder
+    private var quickVerifySection: some View {
+        // Get current PMC values from DailyMetrics
+        let pmcValues = fetchCurrentPMC()
+
+        QuickVerifyCard(
+            workout: workout,
+            currentCTL: pmcValues.ctl,
+            currentATL: pmcValues.atl,
+            currentTSB: pmcValues.tsb
+        )
+    }
+
+    /// Fetch current PMC values from the most recent DailyMetrics
+    private func fetchCurrentPMC() -> (ctl: Double, atl: Double, tsb: Double) {
+        let descriptor = FetchDescriptor<DailyMetrics>(
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+
+        if let metrics = try? modelContext.fetch(descriptor).first {
+            return (metrics.ctl, metrics.atl, metrics.tsb)
+        }
+
+        // Default values if no metrics found
+        return (0, 0, 0)
     }
 
     // MARK: - Heart Rate Zones
