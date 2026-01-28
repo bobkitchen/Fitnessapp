@@ -472,6 +472,86 @@ final class TSSLearningEngine {
         print("  - New scaling factor: \(String(format: "%.3f", profile.globalScalingFactor))")
     }
 
+    /// Record PMC drift signal to infer systematic TSS bias
+    /// Uses CTL/ATL corrections to identify if TSS scaling needs adjustment
+    ///
+    /// Math: If CTL drifted by X over the past N days, our cumulative TSS
+    /// was off by approximately X * 42 / N per day on average.
+    func recordPMCDriftSignal(
+        ctlDelta: Double,
+        atlDelta: Double?,
+        onDate: Date,
+        activityCategory: ActivityCategory
+    ) async throws {
+        let profile = try getOrCreateScalingProfile()
+
+        guard profile.learningEnabled else { return }
+
+        // Find recent workouts to estimate how many training days contributed to drift
+        let calendar = Calendar.current
+        let lookbackDays = 14  // Estimate drift accumulated over ~2 weeks
+        guard let startDate = calendar.date(byAdding: .day, value: -lookbackDays, to: onDate) else { return }
+
+        let predicate = #Predicate<WorkoutRecord> { workout in
+            workout.startDate >= startDate && workout.startDate <= onDate
+        }
+        let descriptor = FetchDescriptor<WorkoutRecord>(predicate: predicate)
+        let recentWorkouts = (try? modelContext.fetch(descriptor)) ?? []
+
+        let trainingDays = max(1, recentWorkouts.count)
+
+        // Infer daily TSS adjustment needed
+        // CTL formula: CTL_new = CTL_old + (TSS - CTL_old) / 42
+        // If CTL drifted by ctlDelta over trainingDays, each workout's TSS was off by:
+        // dailyTSSError ≈ ctlDelta * 42 / trainingDays
+        let inferredDailyTSSError = ctlDelta * 42.0 / Double(trainingDays)
+
+        // Calculate what scaling adjustment this implies
+        // If average workout TSS is ~50 and we're off by 3, that's a 6% adjustment
+        let avgWorkoutTSS = recentWorkouts.isEmpty ? 50.0 :
+            recentWorkouts.reduce(0.0) { $0 + $1.tss } / Double(recentWorkouts.count)
+
+        guard avgWorkoutTSS > 10 else { return }  // Sanity check
+
+        let impliedScalingAdjustment = 1.0 + (inferredDailyTSSError / avgWorkoutTSS)
+
+        // Only apply if adjustment is reasonable (within 20%)
+        guard impliedScalingAdjustment >= 0.8 && impliedScalingAdjustment <= 1.2 else {
+            print("[TSSLearning] PMC drift implies unreasonable adjustment (\(String(format: "%.2f", impliedScalingAdjustment))), ignoring")
+            return
+        }
+
+        // Create a synthetic calibration data point based on drift inference
+        // Weight it lower than direct TSS observations (it's an inference)
+        let syntheticTSS = avgWorkoutTSS
+        let inferredTPTSS = avgWorkoutTSS * impliedScalingAdjustment
+
+        let dataPoint = TSSCalibrationDataPoint(
+            effectiveDate: onDate,
+            extractedDailyTSS: inferredTPTSS,
+            calculatedDailyTSS: syntheticTSS,
+            ocrConfidence: 0.6,  // Lower confidence for inferred values
+            activityCategory: activityCategory,
+            derivationMethod: .derivedFromCTL,
+            calibrationRecordId: nil
+        )
+
+        // Mark as drift-inferred (not multi-sport, but also not a single workout)
+        dataPoint.isMultiSport = true  // Flag to indicate it's an aggregate inference
+
+        modelContext.insert(dataPoint)
+
+        // Recalculate with new data
+        try recalculateScalingFactors(profile: profile)
+        try modelContext.save()
+
+        print("[TSSLearning] Recorded PMC drift signal:")
+        print("  - CTL drift: \(String(format: "%+.1f", ctlDelta)) over \(trainingDays) workouts")
+        print("  - Inferred daily TSS error: \(String(format: "%+.1f", inferredDailyTSSError))")
+        print("  - Implied scaling adjustment: \(String(format: "%.3f", impliedScalingAdjustment))")
+        print("  - Updated global factor: \(String(format: "%.3f", profile.globalScalingFactor))")
+    }
+
     /// Record PMC calibration from user-provided values
     /// Updates the CalibrationRecord with PMC values for historical reference
     private func recordPMCCalibration(

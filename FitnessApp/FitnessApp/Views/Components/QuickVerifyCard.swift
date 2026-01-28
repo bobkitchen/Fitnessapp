@@ -262,7 +262,7 @@ struct QuickVerifyCard: View {
 
         // Trigger learning - confirmed means our calculation was correct
         Task {
-            await triggerLearning(tssCorrect: true, delta: 0)
+            await triggerLearning(tssCorrect: true)
         }
     }
 
@@ -309,10 +309,20 @@ struct QuickVerifyCard: View {
 
         onVerified?(workout)
 
-        // Trigger learning with the delta
-        let delta = (workout.userEnteredTSS ?? workout.tss) - (workout.calculatedTSS ?? workout.tss)
+        // Trigger learning with the TSS delta
+        let tssDelta = (workout.userEnteredTSS ?? workout.tss) - (workout.calculatedTSS ?? workout.tss)
+
+        // Calculate PMC delta to inform learning about systematic drift
+        let ctlDelta = correctedCTL.map { $0 - currentCTL }
+        let atlDelta = correctedATL.map { $0 - currentATL }
+
         Task {
-            await triggerLearning(tssCorrect: false, delta: delta)
+            await triggerLearning(
+                tssCorrect: false,
+                tssDelta: tssDelta,
+                ctlDelta: ctlDelta,
+                atlDelta: atlDelta
+            )
         }
     }
 
@@ -367,7 +377,12 @@ struct QuickVerifyCard: View {
         try? modelContext.save()
     }
 
-    private func triggerLearning(tssCorrect: Bool, delta: Double) async {
+    private func triggerLearning(
+        tssCorrect: Bool,
+        tssDelta: Double = 0,
+        ctlDelta: Double? = nil,
+        atlDelta: Double? = nil
+    ) async {
         let learningEngine = TSSLearningEngine(modelContext: modelContext)
 
         do {
@@ -388,7 +403,18 @@ struct QuickVerifyCard: View {
                     trainingPeaksIF: nil,  // We don't have TP's IF
                     matchConfidence: 0.95  // User-entered, high confidence
                 )
-                print("[QuickVerify] Recorded correction: calculated=\(Int(workout.calculatedTSS ?? workout.tss)), TP=\(Int(userTSS)), delta=\(Int(delta))")
+                print("[QuickVerify] Recorded TSS correction: calculated=\(Int(workout.calculatedTSS ?? workout.tss)), TP=\(Int(userTSS)), delta=\(Int(tssDelta))")
+            }
+
+            // If PMC was corrected, use drift to infer systematic TSS bias
+            if let ctlDelta = ctlDelta, abs(ctlDelta) > 0.5 {
+                try await learningEngine.recordPMCDriftSignal(
+                    ctlDelta: ctlDelta,
+                    atlDelta: atlDelta,
+                    onDate: workout.startDate,
+                    activityCategory: workout.activityCategory
+                )
+                print("[QuickVerify] Recorded PMC drift signal: CTL Δ\(String(format: "%+.1f", ctlDelta))")
             }
         } catch {
             print("[QuickVerify] Failed to record learning: \(error.localizedDescription)")
