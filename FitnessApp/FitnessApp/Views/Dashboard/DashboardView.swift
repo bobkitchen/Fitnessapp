@@ -7,7 +7,13 @@ struct DashboardView: View {
     @Environment(HealthKitService.self) private var healthKitService
     @Environment(ReadinessStateService.self) private var readinessState: ReadinessStateService?
     @Query(sort: [SortDescriptor(\DailyMetrics.date, order: .reverse)]) private var dailyMetrics: [DailyMetrics]
-    @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)], fetchLimit: 100) private var recentWorkouts: [WorkoutRecord]
+    @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)]) private var allWorkouts: [WorkoutRecord]
+
+    /// Limit workouts to most recent 100 to prevent performance issues with large histories.
+    /// This is computed from the query results since @Query doesn't support fetchLimit directly.
+    private var recentWorkouts: [WorkoutRecord] {
+        Array(allWorkouts.prefix(100))
+    }
     @Query private var profiles: [AthleteProfile]
 
     // showingCoachSheet removed - Coach tab available in navigation

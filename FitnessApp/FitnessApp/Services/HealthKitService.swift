@@ -54,17 +54,14 @@ final class HealthKitService {
     // MARK: - Cleanup
 
     /// Stop all observer queries and release resources.
+    /// Call this when the service is no longer needed.
+    /// Note: In Swift 6, deinit cannot safely access isolated state,
+    /// so cleanup must be done explicitly via this method.
     func stopAllObservers() {
         for query in observerQueries {
             core.healthStore.stop(query)
         }
         observerQueries.removeAll()
-    }
-
-    deinit {
-        for query in observerQueries {
-            core.healthStore.stop(query)
-        }
     }
 
     // MARK: - Simulator Detection

@@ -10,14 +10,11 @@ actor OpenRouterService {
 
     /// Rate limiter for API calls to prevent abuse and manage costs.
     /// Allows 10 requests per minute with burst capacity of 5.
-    private let rateLimiter = RateLimiter(
-        tokensPerSecond: 10.0 / 60.0,  // 10 requests per minute
-        maxTokens: 5                    // Allow burst of up to 5 requests
-    )
+    private let rateLimiter: RateLimiter
 
     /// Shared session for streaming requests (nonisolated access).
     /// Uses the same configuration as the instance session but can be accessed from nonisolated methods.
-    private static let streamingSession: URLSession = {
+    private nonisolated static let streamingSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 120     // Wait up to 2 min for response to start
         config.timeoutIntervalForResource = 600    // 10 min max for full streaming response
@@ -26,7 +23,7 @@ actor OpenRouterService {
     }()
 
     /// Shared rate limiter for streaming requests (nonisolated access).
-    private static let streamingRateLimiter = RateLimiter(
+    private nonisolated static let streamingRateLimiter = RateLimiter(
         tokensPerSecond: 10.0 / 60.0,
         maxTokens: 5
     )
@@ -37,6 +34,10 @@ actor OpenRouterService {
         config.timeoutIntervalForResource = 600    // 10 min max for full streaming response
         config.waitsForConnectivity = true         // Handle network transitions
         self.session = URLSession(configuration: config)
+        self.rateLimiter = RateLimiter(
+            tokensPerSecond: 10.0 / 60.0,  // 10 requests per minute
+            maxTokens: 5                    // Allow burst of up to 5 requests
+        )
     }
 
     // MARK: - Available Models
@@ -628,13 +629,12 @@ enum OpenRouterError: LocalizedError {
 // MARK: - Rate Limiter
 
 /// Token bucket rate limiter for controlling API request frequency.
-/// Thread-safe implementation using actors for concurrent access.
-final class RateLimiter: @unchecked Sendable {
+/// Uses actor isolation for thread safety in Swift 6 concurrency.
+actor RateLimiter {
     private let tokensPerSecond: Double
     private let maxTokens: Double
     private var tokens: Double
     private var lastRefillTime: Date
-    private let lock = NSLock()
 
     /// Initialize a rate limiter with specified rate and burst capacity.
     /// - Parameters:
@@ -650,9 +650,6 @@ final class RateLimiter: @unchecked Sendable {
     /// Attempt to consume a token for a request.
     /// - Returns: true if the request is allowed, false if rate limited
     func tryConsume() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
         refillTokens()
 
         if tokens >= 1.0 {
@@ -665,36 +662,29 @@ final class RateLimiter: @unchecked Sendable {
     /// Consume a token, waiting if necessary until one is available.
     /// - Returns: The time waited in seconds (0 if no wait was needed)
     func consumeWithWait() async -> TimeInterval {
-        lock.lock()
         refillTokens()
 
         if tokens >= 1.0 {
             tokens -= 1.0
-            lock.unlock()
             return 0
         }
 
         // Calculate wait time
         let tokensNeeded = 1.0 - tokens
         let waitTime = tokensNeeded / tokensPerSecond
-        lock.unlock()
 
         // Wait for tokens to become available
         try? await Task.sleep(for: .seconds(waitTime))
 
         // Now consume
-        lock.lock()
         refillTokens()
         tokens = max(0, tokens - 1.0)
-        lock.unlock()
 
         return waitTime
     }
 
     /// Check current token count (for debugging/monitoring)
-    var currentTokens: Double {
-        lock.lock()
-        defer { lock.unlock() }
+    func currentTokens() -> Double {
         refillTokens()
         return tokens
     }
