@@ -52,6 +52,19 @@ final class TSSCalibrationDataPoint {
     /// Whether this day had multiple activity types
     var isMultiSport: Bool = false
 
+    /// Intensity bucket for stratified calibration
+    var intensityBucketRaw: String?
+    var intensityBucket: IntensityBucket? {
+        get {
+            guard let raw = intensityBucketRaw else { return nil }
+            return IntensityBucket(rawValue: raw)
+        }
+        set { intensityBucketRaw = newValue?.rawValue }
+    }
+
+    /// The workout's intensity factor (IF) at time of calibration
+    var workoutIntensityFactor: Double?
+
     // MARK: - Confidence & Validity
 
     /// OCR confidence from the screenshot extraction

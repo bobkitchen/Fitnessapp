@@ -232,6 +232,52 @@ nonisolated enum SleepStage: String, Codable, Sendable {
     case asleep = "Asleep"  // Generic asleep (older data)
 }
 
+/// Intensity bucket for stratified TSS calibration
+/// Groups workouts by intensity factor for more accurate scaling
+nonisolated enum IntensityBucket: String, Codable, CaseIterable, Sendable {
+    case recovery = "Recovery"      // IF < 0.75
+    case endurance = "Endurance"    // IF 0.75 - 0.90
+    case tempo = "Tempo"            // IF 0.90 - 1.05
+    case highIntensity = "HighIntensity"  // IF > 1.05
+
+    /// Determine intensity bucket from IF value
+    init(intensityFactor: Double) {
+        switch intensityFactor {
+        case ..<0.75: self = .recovery
+        case 0.75..<0.90: self = .endurance
+        case 0.90..<1.05: self = .tempo
+        default: self = .highIntensity
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .recovery: return "Recovery/Easy"
+        case .endurance: return "Endurance"
+        case .tempo: return "Tempo/Threshold"
+        case .highIntensity: return "High Intensity"
+        }
+    }
+
+    var ifRange: String {
+        switch self {
+        case .recovery: return "IF < 0.75"
+        case .endurance: return "IF 0.75-0.90"
+        case .tempo: return "IF 0.90-1.05"
+        case .highIntensity: return "IF > 1.05"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .recovery: return "leaf"
+        case .endurance: return "figure.walk"
+        case .tempo: return "figure.run"
+        case .highIntensity: return "flame"
+        }
+    }
+}
+
 /// Date range options for charts
 nonisolated enum ChartDateRange: String, CaseIterable, Sendable {
     case week = "7D"

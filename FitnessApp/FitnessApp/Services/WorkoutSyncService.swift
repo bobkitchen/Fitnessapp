@@ -298,11 +298,20 @@ final class WorkoutSyncService {
     }
 
     /// Apply TSS scaling from learned profile
+    /// Uses intensity-stratified scaling when available for higher precision
     private func applyTSSScaling(to result: inout TSSResult, category: ActivityCategory) {
         guard let profile = scalingProfile, profile.canApplyScaling else { return }
 
-        let scalingFactor = profile.scalingFactor(for: category)
+        // Determine intensity bucket from the workout's IF
+        let intensityBucket = IntensityBucket(intensityFactor: result.intensityFactor)
+
+        // Try intensity-stratified scaling first (most precise)
+        let scalingFactor = profile.scalingFactor(for: category, intensity: intensityBucket)
         result.applyScaling(factor: scalingFactor)
+
+        if profile.scalingFactor(forIntensity: intensityBucket) != nil {
+            print("[WorkoutSync] Applied intensity-stratified scaling: \(intensityBucket.displayName) factor=\(String(format: "%.3f", scalingFactor))")
+        }
     }
 
     private func fetchAverageHeartRate(for workout: HKWorkout) async -> Int? {

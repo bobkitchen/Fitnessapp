@@ -31,6 +31,27 @@ final class TSSScalingProfile {
     var swimScalingFactor: Double?
     var swimSampleCount: Int = 0
 
+    // MARK: - Intensity-Stratified Scaling
+
+    /// Recovery/Easy intensity scaling (IF < 0.75)
+    var recoveryScalingFactor: Double?
+    var recoverySampleCount: Int = 0
+
+    /// Endurance intensity scaling (IF 0.75-0.90)
+    var enduranceScalingFactor: Double?
+    var enduranceSampleCount: Int = 0
+
+    /// Tempo/Threshold intensity scaling (IF 0.90-1.05)
+    var tempoScalingFactor: Double?
+    var tempoSampleCount: Int = 0
+
+    /// High intensity scaling (IF > 1.05)
+    var highIntensityScalingFactor: Double?
+    var highIntensitySampleCount: Int = 0
+
+    /// Minimum samples required for intensity-specific scaling
+    var minSamplesForIntensityScaling: Int = 5
+
     // MARK: - Configuration
 
     /// Whether TSS learning is enabled
@@ -104,6 +125,73 @@ final class TSSScalingProfile {
 
         // Fall back to global factor
         return globalScalingFactor
+    }
+
+    /// Get the scaling factor for a specific activity category AND intensity level
+    /// This provides the most precise calibration by considering both sport and intensity
+    func scalingFactor(for category: ActivityCategory, intensity: IntensityBucket) -> Double {
+        guard canApplyScaling else { return 1.0 }
+
+        // First try intensity-specific factor (most precise)
+        if let intensityFactor = scalingFactor(forIntensity: intensity) {
+            return intensityFactor
+        }
+
+        // Fall back to sport-specific factor
+        return scalingFactor(for: category)
+    }
+
+    /// Get the scaling factor for a specific intensity bucket
+    func scalingFactor(forIntensity bucket: IntensityBucket) -> Double? {
+        switch bucket {
+        case .recovery:
+            if let factor = recoveryScalingFactor, recoverySampleCount >= minSamplesForIntensityScaling {
+                return factor
+            }
+        case .endurance:
+            if let factor = enduranceScalingFactor, enduranceSampleCount >= minSamplesForIntensityScaling {
+                return factor
+            }
+        case .tempo:
+            if let factor = tempoScalingFactor, tempoSampleCount >= minSamplesForIntensityScaling {
+                return factor
+            }
+        case .highIntensity:
+            if let factor = highIntensityScalingFactor, highIntensitySampleCount >= minSamplesForIntensityScaling {
+                return factor
+            }
+        }
+        return nil
+    }
+
+    /// Per-intensity status for UI display
+    var perIntensityStatus: [(bucket: IntensityBucket, factor: Double?, samples: Int, status: String)] {
+        [
+            (
+                .recovery,
+                recoveryScalingFactor,
+                recoverySampleCount,
+                recoverySampleCount >= minSamplesForIntensityScaling ? "Active" : "Need more data"
+            ),
+            (
+                .endurance,
+                enduranceScalingFactor,
+                enduranceSampleCount,
+                enduranceSampleCount >= minSamplesForIntensityScaling ? "Active" : "Need more data"
+            ),
+            (
+                .tempo,
+                tempoScalingFactor,
+                tempoSampleCount,
+                tempoSampleCount >= minSamplesForIntensityScaling ? "Active" : "Need more data"
+            ),
+            (
+                .highIntensity,
+                highIntensityScalingFactor,
+                highIntensitySampleCount,
+                highIntensitySampleCount >= minSamplesForIntensityScaling ? "Active" : "Need more data"
+            )
+        ]
     }
 
     /// Human-readable confidence level

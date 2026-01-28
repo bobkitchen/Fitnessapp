@@ -248,6 +248,49 @@ final class TSSLearningEngine {
             profile.swimScalingFactor = factor
             profile.swimSampleCount = count
         }
+
+        // Calculate intensity-stratified factors
+        calculatePerIntensityFactors(profile: profile, dataPoints: dataPoints)
+    }
+
+    /// Calculate per-intensity scaling factors (stratified by IF)
+    private func calculatePerIntensityFactors(
+        profile: TSSScalingProfile,
+        dataPoints: [TSSCalibrationDataPoint]
+    ) {
+        // Recovery (IF < 0.75)
+        let recoveryPoints = dataPoints.filter { $0.intensityBucket == .recovery }
+        if !recoveryPoints.isEmpty {
+            let (factor, _, count) = calculateWeightedScalingFactor(from: recoveryPoints)
+            profile.recoveryScalingFactor = factor
+            profile.recoverySampleCount = count
+        }
+
+        // Endurance (IF 0.75-0.90)
+        let endurancePoints = dataPoints.filter { $0.intensityBucket == .endurance }
+        if !endurancePoints.isEmpty {
+            let (factor, _, count) = calculateWeightedScalingFactor(from: endurancePoints)
+            profile.enduranceScalingFactor = factor
+            profile.enduranceSampleCount = count
+        }
+
+        // Tempo (IF 0.90-1.05)
+        let tempoPoints = dataPoints.filter { $0.intensityBucket == .tempo }
+        if !tempoPoints.isEmpty {
+            let (factor, _, count) = calculateWeightedScalingFactor(from: tempoPoints)
+            profile.tempoScalingFactor = factor
+            profile.tempoSampleCount = count
+        }
+
+        // High Intensity (IF > 1.05)
+        let highIntensityPoints = dataPoints.filter { $0.intensityBucket == .highIntensity }
+        if !highIntensityPoints.isEmpty {
+            let (factor, _, count) = calculateWeightedScalingFactor(from: highIntensityPoints)
+            profile.highIntensityScalingFactor = factor
+            profile.highIntensitySampleCount = count
+        }
+
+        print("[TSSLearning] Intensity factors: recovery=\(profile.recoveryScalingFactor.map { String(format: "%.3f", $0) } ?? "nil")(\(profile.recoverySampleCount)), endurance=\(profile.enduranceScalingFactor.map { String(format: "%.3f", $0) } ?? "nil")(\(profile.enduranceSampleCount)), tempo=\(profile.tempoScalingFactor.map { String(format: "%.3f", $0) } ?? "nil")(\(profile.tempoSampleCount)), high=\(profile.highIntensityScalingFactor.map { String(format: "%.3f", $0) } ?? "nil")(\(profile.highIntensitySampleCount))")
     }
 
     // MARK: - Data Queries
@@ -348,6 +391,13 @@ final class TSSLearningEngine {
         // Mark as from URL import (not multi-sport since it's a single workout)
         dataPoint.isMultiSport = false
 
+        // Capture intensity data for stratified calibration
+        let workoutIF = trainingPeaksIF ?? workout.intensityFactor
+        if workoutIF > 0 {
+            dataPoint.workoutIntensityFactor = workoutIF
+            dataPoint.intensityBucket = IntensityBucket(intensityFactor: workoutIF)
+        }
+
         modelContext.insert(dataPoint)
 
         // Recalculate scaling factors with new data
@@ -391,6 +441,14 @@ final class TSSLearningEngine {
             calibrationRecordId: nil
         )
         tssDataPoint.isMultiSport = false
+
+        // Capture intensity data for stratified calibration
+        let workoutIF = trainingPeaksIF ?? workout.intensityFactor
+        if workoutIF > 0 {
+            tssDataPoint.workoutIntensityFactor = workoutIF
+            tssDataPoint.intensityBucket = IntensityBucket(intensityFactor: workoutIF)
+        }
+
         modelContext.insert(tssDataPoint)
 
         // 2. Record PMC calibration
