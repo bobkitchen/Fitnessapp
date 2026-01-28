@@ -97,6 +97,22 @@ final class WorkoutRecord {
     var routeFileURL: String?               // Path to stored GPX/route data
     var routeData: Data?                    // Encoded polyline coordinates (JSON array of [lat, lng] pairs)
 
+    // MARK: - Strava Integration
+    var stravaActivityId: Int?              // Strava activity ID for linking
+
+    // MARK: - TSS Verification (Quick-Verify Feature)
+    var tssVerificationStatusRaw: String?
+    var tssVerificationStatus: TSSVerificationStatus {
+        get { TSSVerificationStatus(rawValue: tssVerificationStatusRaw ?? "") ?? .pending }
+        set { tssVerificationStatusRaw = newValue.rawValue }
+    }
+    var calculatedTSS: Double?              // Our calculated TSS (before user correction)
+    var userEnteredTSS: Double?             // TSS value user entered from TP
+    var userEnteredCTL: Double?             // CTL value user entered from TP
+    var userEnteredATL: Double?             // ATL value user entered from TP
+    var userEnteredTSB: Double?             // TSB value user entered from TP
+    var verifiedAt: Date?                   // When user verified/corrected values
+
     init(
         id: UUID = UUID(),
         healthKitUUID: UUID? = nil,

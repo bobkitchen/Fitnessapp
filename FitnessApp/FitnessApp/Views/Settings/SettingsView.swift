@@ -761,6 +761,9 @@ struct HealthKitSettingsView: View {
             .disabled(workoutSyncService?.isSyncing == true || !healthKitService.isAuthorized)
         }
 
+        // Strava Integration Section
+        StravaSettingsSection()
+
         // Health Permissions Section - always visible
         Section("Health Permissions") {
             Button {

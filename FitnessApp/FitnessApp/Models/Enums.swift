@@ -57,12 +57,14 @@ nonisolated enum MetricSource: String, Codable, Sendable {
 /// Source of workout data
 nonisolated enum WorkoutSource: String, Codable, Sendable {
     case healthKit = "HealthKit"       // Synced from Apple Health
+    case strava = "Strava"             // Synced from Strava
     case trainingPeaks = "TrainingPeaks" // Imported from TrainingPeaks CSV
     case manual = "Manual"             // Manually entered
 
     var displayName: String {
         switch self {
         case .healthKit: return "Apple Health"
+        case .strava: return "Strava"
         case .trainingPeaks: return "TrainingPeaks"
         case .manual: return "Manual Entry"
         }
@@ -71,8 +73,24 @@ nonisolated enum WorkoutSource: String, Codable, Sendable {
     var icon: String {
         switch self {
         case .healthKit: return "heart.fill"
+        case .strava: return "figure.run.circle"
         case .trainingPeaks: return "chart.line.uptrend.xyaxis"
         case .manual: return "pencil"
+        }
+    }
+}
+
+/// TSS verification status for quick-verify feature
+nonisolated enum TSSVerificationStatus: String, Codable, Sendable {
+    case pending = "pending"           // Not yet verified by user
+    case confirmed = "confirmed"       // User confirmed calculated value matches TP
+    case corrected = "corrected"       // User entered different value from TP
+
+    var icon: String {
+        switch self {
+        case .pending: return "questionmark.circle"
+        case .confirmed: return "checkmark.circle.fill"
+        case .corrected: return "pencil.circle.fill"
         }
     }
 }
