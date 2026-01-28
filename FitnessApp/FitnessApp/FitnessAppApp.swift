@@ -21,24 +21,27 @@ struct FitnessAppApp: App {
     @State private var readinessState = ReadinessStateService()
     @State private var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
 
+    @State private var storageError: StorageError?
+
     init() {
+        let schema = Schema([
+            AthleteProfile.self,
+            DailyMetrics.self,
+            WorkoutRecord.self,
+            CalibrationRecord.self,
+            TSSScalingProfile.self,
+            TSSCalibrationDataPoint.self,
+            CoachingKnowledge.self,
+            UserMemory.self
+        ])
+
+        // Use app's documents directory for SwiftData storage (not App Group)
+        // App Group is reserved for Share Extension data sharing
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let storeURL = documentsURL.appendingPathComponent("FitnessApp.store")
+
+        // Try persistent storage first, fall back to in-memory if corrupted
         do {
-            let schema = Schema([
-                AthleteProfile.self,
-                DailyMetrics.self,
-                WorkoutRecord.self,
-                CalibrationRecord.self,
-                TSSScalingProfile.self,
-                TSSCalibrationDataPoint.self,
-                CoachingKnowledge.self,
-                UserMemory.self
-            ])
-
-            // Use app's documents directory for SwiftData storage (not App Group)
-            // App Group is reserved for Share Extension data sharing
-            let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let storeURL = documentsURL.appendingPathComponent("FitnessApp.store")
-
             let modelConfiguration = ModelConfiguration(
                 schema: schema,
                 url: storeURL,
@@ -50,20 +53,71 @@ struct FitnessAppApp: App {
                 configurations: [modelConfiguration]
             )
         } catch {
-            fatalError("Could not initialize ModelContainer: \(error)")
+            // Log the error for debugging
+            print("[FitnessApp] ERROR: Failed to initialize persistent storage: \(error)")
+            print("[FitnessApp] Falling back to in-memory storage. Data will not persist.")
+
+            // Fall back to in-memory storage so the app remains functional
+            do {
+                let inMemoryConfig = ModelConfiguration(
+                    schema: schema,
+                    isStoredInMemoryOnly: true,
+                    cloudKitDatabase: .none
+                )
+                modelContainer = try ModelContainer(
+                    for: schema,
+                    configurations: [inMemoryConfig]
+                )
+                // Note: We'll show the user an alert about this in the view
+                _storageError = State(initialValue: .persistentStorageFailed(error))
+            } catch {
+                // If even in-memory fails, we have a serious problem
+                fatalError("Could not initialize ModelContainer even with in-memory storage: \(error)")
+            }
+        }
+    }
+
+    /// Storage-related errors that can be shown to the user
+    enum StorageError: Identifiable {
+        case persistentStorageFailed(Error)
+
+        var id: String {
+            switch self {
+            case .persistentStorageFailed: return "persistent_storage_failed"
+            }
+        }
+
+        var title: String {
+            "Storage Issue"
+        }
+
+        var message: String {
+            switch self {
+            case .persistentStorageFailed:
+                return "Unable to access your saved data. The app is running with temporary storage. Your data from this session will not be saved. Try restarting the app or contact support if this persists."
+            }
         }
     }
 
     var body: some Scene {
         WindowGroup {
-            if hasCompletedOnboarding {
-                MainTabView()
-                    .environment(healthKitService)
-                    .environment(readinessState)
-            } else {
-                OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
-                    .environment(healthKitService)
-                    .environment(readinessState)
+            Group {
+                if hasCompletedOnboarding {
+                    MainTabView()
+                        .environment(healthKitService)
+                        .environment(readinessState)
+                } else {
+                    OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
+                        .environment(healthKitService)
+                        .environment(readinessState)
+                }
+            }
+            .alert(item: $storageError) { error in
+                Alert(
+                    title: Text(error.title),
+                    message: Text(error.message),
+                    dismissButton: .default(Text("OK"))
+                )
             }
         }
         .modelContainer(modelContainer)

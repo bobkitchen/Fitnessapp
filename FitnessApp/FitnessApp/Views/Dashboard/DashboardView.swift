@@ -7,7 +7,7 @@ struct DashboardView: View {
     @Environment(HealthKitService.self) private var healthKitService
     @Environment(ReadinessStateService.self) private var readinessState: ReadinessStateService?
     @Query(sort: [SortDescriptor(\DailyMetrics.date, order: .reverse)]) private var dailyMetrics: [DailyMetrics]
-    @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)]) private var recentWorkouts: [WorkoutRecord]
+    @Query(sort: [SortDescriptor(\WorkoutRecord.startDate, order: .reverse)], fetchLimit: 100) private var recentWorkouts: [WorkoutRecord]
     @Query private var profiles: [AthleteProfile]
 
     // showingCoachSheet removed - Coach tab available in navigation
@@ -108,16 +108,19 @@ struct DashboardView: View {
                 onTap: { showReadinessDetail = true },
                 onInfoTap: { showGradeExplanation = true }
             )
-            .onAppear {
-                // Update the shared readiness state for profile avatar border color
-                readinessState?.currentScore = result.score
+            // Single task handles both initial load and updates.
+            // Using .id() on todayMetrics causes task to re-run when metrics change.
+            .task(id: todayMetrics?.id) {
+                updateReadinessState()
             }
-            .onChange(of: todayMetrics?.hrvRMSSD) { _, _ in
-                // Recalculate and update readiness state when metrics change
-                if let newResult = calculateReadiness() {
-                    readinessState?.currentScore = newResult.score
-                }
-            }
+        }
+    }
+
+    /// Single source of truth for updating the shared readiness state.
+    /// Called from one place to avoid race conditions.
+    private func updateReadinessState() {
+        if let result = calculateReadiness() {
+            readinessState?.currentScore = result.score
         }
     }
 
@@ -196,86 +199,44 @@ struct DashboardView: View {
         return .stable
     }
 
-    // MARK: - Wellness Baselines (used by calculateReadiness)
+    // MARK: - Wellness Baselines (delegating to TrainingRecommendationService)
 
     private var hrvBaseline: Double? {
-        let values = last7DaysMetrics.compactMap { $0.hrvRMSSD }
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
+        TrainingRecommendationService.calculateHRVBaseline(from: last7DaysMetrics)
     }
 
     private var rhrBaseline: Double? {
-        let values = last7DaysMetrics.compactMap { $0.restingHR }.map { Double($0) }
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
+        TrainingRecommendationService.calculateRHRBaseline(from: last7DaysMetrics)
     }
 
-    // MARK: - Weekly Activity Stats
+    // MARK: - Weekly Activity Stats (delegating to TrainingRecommendationService)
 
-    private var weeklyTSS: Double {
-        let calendar = Calendar.current
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: Date())!
-        return recentWorkouts
-            .filter { $0.startDate >= weekAgo }
-            .reduce(0) { $0 + $1.tss }
+    private var weeklyStats: (tss: Double, hours: Double, count: Int) {
+        TrainingRecommendationService.calculateWeeklyStats(from: Array(recentWorkouts))
     }
 
-    private var weeklyHours: Double {
-        let calendar = Calendar.current
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: Date())!
-        return recentWorkouts
-            .filter { $0.startDate >= weekAgo }
-            .reduce(0) { $0 + $1.durationSeconds } / 3600
-    }
-
-    private var weeklyWorkoutCount: Int {
-        let calendar = Calendar.current
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: Date())!
-        return recentWorkouts.filter { $0.startDate >= weekAgo }.count
-    }
+    private var weeklyTSS: Double { weeklyStats.tss }
+    private var weeklyHours: Double { weeklyStats.hours }
+    private var weeklyWorkoutCount: Int { weeklyStats.count }
 
     private var weeklyByActivity: [ActivityCategory: Double] {
-        let calendar = Calendar.current
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: Date())!
-        var result: [ActivityCategory: Double] = [:]
-        for workout in recentWorkouts.filter({ $0.startDate >= weekAgo }) {
-            result[workout.activityCategory, default: 0] += workout.tss
-        }
-        return result
+        TrainingRecommendationService.calculateWeeklyByActivity(from: Array(recentWorkouts))
     }
 
-    // MARK: - Helper Methods
+    // MARK: - Helper Methods (Delegating to TrainingRecommendationService)
 
     private func generateRecommendation(for readiness: TrainingReadiness) -> String {
-        guard todayMetrics != nil else {
-            return "No data available yet. Complete your first workout to get personalized recommendations."
-        }
-
-        switch readiness {
-        case .fullyReady:
-            return "Your recovery metrics are excellent. Great day for a quality session or high-intensity intervals."
-        case .mostlyReady:
-            return "Good recovery status. Normal training is appropriate today."
-        case .reducedCapacity:
-            return "Signs of accumulated fatigue. Consider an easier session or active recovery."
-        case .restRecommended:
-            return "Recovery indicators suggest rest is needed. Take a day off or do very light activity."
-        }
+        TrainingRecommendationService.generateRecommendation(
+            for: readiness,
+            hasMetrics: todayMetrics != nil
+        )
     }
 
     private func suggestWorkout(for readiness: TrainingReadiness) -> String? {
-        guard todayMetrics != nil else { return nil }
-
-        switch readiness {
-        case .fullyReady:
-            return "Threshold intervals or hard group ride"
-        case .mostlyReady:
-            return "Moderate endurance session"
-        case .reducedCapacity:
-            return "Easy recovery spin"
-        case .restRecommended:
-            return "Rest day or yoga"
-        }
+        TrainingRecommendationService.suggestWorkout(
+            for: readiness,
+            hasMetrics: todayMetrics != nil
+        )
     }
 
     private func calculateReadiness() -> ReadinessResult? {

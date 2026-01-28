@@ -6,6 +6,31 @@ actor OpenRouterService {
     private let baseURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private let session: URLSession
 
+    // MARK: - Rate Limiting
+
+    /// Rate limiter for API calls to prevent abuse and manage costs.
+    /// Allows 10 requests per minute with burst capacity of 5.
+    private let rateLimiter = RateLimiter(
+        tokensPerSecond: 10.0 / 60.0,  // 10 requests per minute
+        maxTokens: 5                    // Allow burst of up to 5 requests
+    )
+
+    /// Shared session for streaming requests (nonisolated access).
+    /// Uses the same configuration as the instance session but can be accessed from nonisolated methods.
+    private static let streamingSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120     // Wait up to 2 min for response to start
+        config.timeoutIntervalForResource = 600    // 10 min max for full streaming response
+        config.waitsForConnectivity = true         // Handle network transitions
+        return URLSession(configuration: config)
+    }()
+
+    /// Shared rate limiter for streaming requests (nonisolated access).
+    private static let streamingRateLimiter = RateLimiter(
+        tokensPerSecond: 10.0 / 60.0,
+        maxTokens: 5
+    )
+
     init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 120     // Wait up to 2 min for response to start
@@ -84,6 +109,12 @@ actor OpenRouterService {
         model: AIModel = .default,
         systemPrompt: String? = nil
     ) async throws -> String {
+        // Rate limiting: wait for token if needed (won't reject, just delays)
+        let waitTime = await rateLimiter.consumeWithWait()
+        if waitTime > 0 {
+            print("[OpenRouter] Rate limited, waited \(String(format: "%.2f", waitTime))s")
+        }
+
         guard let apiKey = KeychainService.getOpenRouterAPIKey() else {
             throw OpenRouterError.noAPIKey
         }
@@ -191,19 +222,16 @@ actor OpenRouterService {
             // Use regular Task (not detached) to maintain continuation connectivity
             // Task.detached was causing chunks to not be delivered to consumer
             let task = Task { [requestData, apiKey, url] in
-                // Create isolated URLSession for this streaming request
-                let config = URLSessionConfiguration.default
-                config.timeoutIntervalForRequest = 120
-                config.timeoutIntervalForResource = 600
-                config.waitsForConnectivity = true
-                let session = URLSession(configuration: config)
-
-                // CRITICAL: Always clean up, even on cancellation
-                // Use invalidateAndCancel() instead of finishTasksAndInvalidate() because
-                // SSE connections don't close automatically after [DONE], causing hangs
-                defer {
-                    session.invalidateAndCancel()
+                // Rate limiting: wait for token if needed
+                let waitTime = await Self.streamingRateLimiter.consumeWithWait()
+                if waitTime > 0 {
+                    print("[OpenRouter] Streaming rate limited, waited \(String(format: "%.2f", waitTime))s")
                 }
+
+                // Use shared static session for streaming to avoid creating new sessions per request.
+                // This improves performance and reduces resource usage.
+                // NOTE: We don't invalidate the shared session - it's reused across requests.
+                let session = Self.streamingSession
 
                 do {
                     // Check cancellation before starting
@@ -575,6 +603,7 @@ enum OpenRouterError: LocalizedError {
     case apiError(String)
     case noContent
     case streamingError
+    case rateLimited
 
     var errorDescription: String? {
         switch self {
@@ -590,7 +619,92 @@ enum OpenRouterError: LocalizedError {
             return "No content in response"
         case .streamingError:
             return "Error during streaming response"
+        case .rateLimited:
+            return "Too many requests. Please wait a moment before trying again."
         }
+    }
+}
+
+// MARK: - Rate Limiter
+
+/// Token bucket rate limiter for controlling API request frequency.
+/// Thread-safe implementation using actors for concurrent access.
+final class RateLimiter: @unchecked Sendable {
+    private let tokensPerSecond: Double
+    private let maxTokens: Double
+    private var tokens: Double
+    private var lastRefillTime: Date
+    private let lock = NSLock()
+
+    /// Initialize a rate limiter with specified rate and burst capacity.
+    /// - Parameters:
+    ///   - tokensPerSecond: How many tokens are added per second (request rate)
+    ///   - maxTokens: Maximum tokens in the bucket (burst capacity)
+    init(tokensPerSecond: Double, maxTokens: Double) {
+        self.tokensPerSecond = tokensPerSecond
+        self.maxTokens = maxTokens
+        self.tokens = maxTokens  // Start with full bucket
+        self.lastRefillTime = Date()
+    }
+
+    /// Attempt to consume a token for a request.
+    /// - Returns: true if the request is allowed, false if rate limited
+    func tryConsume() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        refillTokens()
+
+        if tokens >= 1.0 {
+            tokens -= 1.0
+            return true
+        }
+        return false
+    }
+
+    /// Consume a token, waiting if necessary until one is available.
+    /// - Returns: The time waited in seconds (0 if no wait was needed)
+    func consumeWithWait() async -> TimeInterval {
+        lock.lock()
+        refillTokens()
+
+        if tokens >= 1.0 {
+            tokens -= 1.0
+            lock.unlock()
+            return 0
+        }
+
+        // Calculate wait time
+        let tokensNeeded = 1.0 - tokens
+        let waitTime = tokensNeeded / tokensPerSecond
+        lock.unlock()
+
+        // Wait for tokens to become available
+        try? await Task.sleep(for: .seconds(waitTime))
+
+        // Now consume
+        lock.lock()
+        refillTokens()
+        tokens = max(0, tokens - 1.0)
+        lock.unlock()
+
+        return waitTime
+    }
+
+    /// Check current token count (for debugging/monitoring)
+    var currentTokens: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        refillTokens()
+        return tokens
+    }
+
+    private func refillTokens() {
+        let now = Date()
+        let timeSinceLastRefill = now.timeIntervalSince(lastRefillTime)
+        let tokensToAdd = timeSinceLastRefill * tokensPerSecond
+        tokens = min(maxTokens, tokens + tokensToAdd)
+        lastRefillTime = now
     }
 }
 

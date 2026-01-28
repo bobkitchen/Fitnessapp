@@ -14,6 +14,24 @@ final class HealthKitService {
     var isAuthorized = false
     var authorizationError: Error?
 
+    // MARK: - Cleanup
+
+    /// Stop all observer queries and release resources.
+    /// Call this when the service is no longer needed.
+    func stopAllObservers() {
+        for query in observerQueries {
+            healthStore.stop(query)
+        }
+        observerQueries.removeAll()
+    }
+
+    deinit {
+        // Stop all observer queries to prevent memory leaks
+        for query in observerQueries {
+            healthStore.stop(query)
+        }
+    }
+
     // MARK: - Simulator Detection
     static var isRunningOnSimulator: Bool {
         #if targetEnvironment(simulator)
