@@ -311,9 +311,31 @@ struct QuickVerifyCard: View {
     }
 
     private func triggerLearning(tssCorrect: Bool, delta: Double) async {
-        // This would integrate with TSSLearningEngine
-        // For now, just log the learning event
-        print("[QuickVerify] Learning event: correct=\(tssCorrect), delta=\(delta), category=\(workout.activityCategory.rawValue)")
+        let learningEngine = TSSLearningEngine(modelContext: modelContext)
+
+        do {
+            if tssCorrect {
+                // User confirmed our calculation matches TP - record as accurate
+                try await learningEngine.recordDirectTSSComparison(
+                    workout: workout,
+                    trainingPeaksTSS: workout.tss,  // Same as calculated
+                    trainingPeaksIF: workout.intensityFactor > 0 ? workout.intensityFactor : nil,
+                    matchConfidence: 1.0  // User confirmed
+                )
+                print("[QuickVerify] Recorded confirmation: TSS=\(Int(workout.tss)) matches TP")
+            } else if let userTSS = workout.userEnteredTSS {
+                // User corrected our calculation - record the TP value
+                try await learningEngine.recordDirectTSSComparison(
+                    workout: workout,
+                    trainingPeaksTSS: userTSS,
+                    trainingPeaksIF: nil,  // We don't have TP's IF
+                    matchConfidence: 0.95  // User-entered, high confidence
+                )
+                print("[QuickVerify] Recorded correction: calculated=\(Int(workout.calculatedTSS ?? workout.tss)), TP=\(Int(userTSS)), delta=\(Int(delta))")
+            }
+        } catch {
+            print("[QuickVerify] Failed to record learning: \(error.localizedDescription)")
+        }
     }
 }
 
