@@ -120,7 +120,7 @@ extension KeychainService {
         }
 
         try save(key: .openRouterAPIKey, value: trimmedKey)
-        UserDefaults.standard.set(true, forKey: "hasOpenRouterAPIKey")
+        UserDefaults.standard.set(true, forKey: .hasOpenRouterAPIKey)
     }
 
     nonisolated static func getOpenRouterAPIKey() -> String? {
@@ -130,7 +130,7 @@ extension KeychainService {
     @MainActor
     static func deleteOpenRouterAPIKey() throws {
         try delete(key: .openRouterAPIKey)
-        UserDefaults.standard.set(false, forKey: "hasOpenRouterAPIKey")
+        UserDefaults.standard.set(false, forKey: .hasOpenRouterAPIKey)
     }
 
     nonisolated static var hasOpenRouterAPIKey: Bool {

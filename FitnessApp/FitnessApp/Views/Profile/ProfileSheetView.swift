@@ -287,7 +287,7 @@ struct ProfileSheetView: View {
     // MARK: - Helper Views & Methods
 
     private var hasAPIKey: Bool {
-        UserDefaults.standard.bool(forKey: "hasOpenRouterAPIKey")
+        UserDefaults.standard.bool(forKey: .hasOpenRouterAPIKey)
     }
 
     private func createProfile() {

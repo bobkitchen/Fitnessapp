@@ -250,7 +250,7 @@ struct SettingsView: View {
 
     private var hasAPIKey: Bool {
         // Check Keychain for API key
-        UserDefaults.standard.bool(forKey: "hasOpenRouterAPIKey")
+        UserDefaults.standard.bool(forKey: .hasOpenRouterAPIKey)
     }
 
     private func createProfile() {

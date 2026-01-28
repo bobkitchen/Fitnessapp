@@ -78,8 +78,8 @@ final class HealthKitService {
     // MARK: - Authorization
 
     var hasAttemptedAuthorization: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasAttemptedHealthKitAuth") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasAttemptedHealthKitAuth") }
+        get { UserDefaults.standard.bool(forKey: .hasAttemptedHealthKitAuth) }
+        set { UserDefaults.standard.set(newValue, forKey: .hasAttemptedHealthKitAuth) }
     }
 
     func requestAuthorization() async {

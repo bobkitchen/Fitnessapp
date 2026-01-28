@@ -232,7 +232,7 @@ struct OnboardingView: View {
                 try await Task.sleep(for: .milliseconds(100))
 
                 await MainActor.run {
-                    UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+                    UserDefaults.standard.set(true, forKey: .hasCompletedOnboarding)
                     hasCompletedOnboarding = true
                 }
             } catch {

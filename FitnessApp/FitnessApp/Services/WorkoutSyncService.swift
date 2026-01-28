@@ -42,7 +42,7 @@ final class WorkoutSyncService {
 
     private func saveStatistics(_ stats: SyncStatistics) {
         if let data = try? JSONEncoder().encode(stats) {
-            UserDefaults.standard.set(data, forKey: "syncStatistics")
+            UserDefaults.standard.set(data, forKey: .syncStatistics)
         }
     }
 

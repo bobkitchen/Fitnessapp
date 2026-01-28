@@ -19,7 +19,7 @@ struct FitnessAppApp: App {
 
     @State private var healthKitService = HealthKitService()
     @State private var readinessState = ReadinessStateService()
-    @State private var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+    @State private var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: .hasCompletedOnboarding)
 
     @State private var storageError: StorageError?
 
@@ -345,7 +345,7 @@ struct MainTabView: View {
             }()
 
             var didUpdate = false
-            let hasInitialSync = UserDefaults.standard.bool(forKey: "hasSyncedProfileFromHealthKit")
+            let hasInitialSync = UserDefaults.standard.bool(forKey: .hasSyncedProfileFromHealthKit)
 
             // Sync birth date only on first sync (age doesn't change)
             // Use fetchDateOfBirth() directly to get exact date, not reconstructed from age
@@ -375,7 +375,7 @@ struct MainTabView: View {
 
             // Mark initial sync complete
             if !hasInitialSync {
-                UserDefaults.standard.set(true, forKey: "hasSyncedProfileFromHealthKit")
+                UserDefaults.standard.set(true, forKey: .hasSyncedProfileFromHealthKit)
             }
 
         } catch {

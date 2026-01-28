@@ -14,11 +14,9 @@ import SwiftData
 final class KnowledgeImportService {
     private let modelContext: ModelContext
 
-    /// UserDefaults key for tracking knowledge base version
-    private static let knowledgeVersionKey = "coaching_knowledge_version"
-
     /// Current version of the bundled knowledge base
-    static let currentKnowledgeVersion = 1
+    /// Update this when adding new knowledge files
+    static let currentKnowledgeVersion = KnowledgeBaseConstants.currentVersion
 
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -29,16 +27,16 @@ final class KnowledgeImportService {
     /// Checks if the knowledge base needs to be seeded or updated.
     /// Call this on app launch.
     func seedKnowledgeIfNeeded() async throws {
-        let storedVersion = UserDefaults.standard.integer(forKey: Self.knowledgeVersionKey)
+        let storedVersion = UserDefaults.standard.integer(forKey: .knowledgeBaseVersion)
 
         if storedVersion == 0 {
             // First launch - seed the knowledge base
             try await seedInitialKnowledge()
-            UserDefaults.standard.set(Self.currentKnowledgeVersion, forKey: Self.knowledgeVersionKey)
+            UserDefaults.standard.set(Self.currentKnowledgeVersion, forKey: .knowledgeBaseVersion)
         } else if storedVersion < Self.currentKnowledgeVersion {
             // Knowledge base update available
             try await updateKnowledgeBase(from: storedVersion)
-            UserDefaults.standard.set(Self.currentKnowledgeVersion, forKey: Self.knowledgeVersionKey)
+            UserDefaults.standard.set(Self.currentKnowledgeVersion, forKey: .knowledgeBaseVersion)
         }
         // else: knowledge is up to date
     }
