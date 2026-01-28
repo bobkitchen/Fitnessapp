@@ -764,6 +764,13 @@ struct HealthKitSettingsView: View {
         // Strava Integration Section
         StravaSettingsSection()
 
+        // TSS Learning Section
+        Section("TSS Accuracy") {
+            TSSAccuracyCard()
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+        }
+
         // Health Permissions Section - always visible
         Section("Health Permissions") {
             Button {
