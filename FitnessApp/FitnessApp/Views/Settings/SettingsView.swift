@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var showingAboutSheet = false
     @State private var accountBalance: String?
     @State private var isLoadingBalance = false
+    @State private var balanceError: AppError?
 
     private var profile: AthleteProfile? { profiles.first }
 
@@ -178,6 +179,18 @@ struct SettingsView: View {
                     } else if let balance = accountBalance {
                         Text(balance)
                             .foregroundStyle(.secondary)
+                    } else if balanceError != nil {
+                        Button {
+                            Task { await fetchAccountBalance() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                                Text("Retry")
+                                    .font(.caption)
+                            }
+                        }
+                        .buttonStyle(.plain)
                     } else {
                         Text("--")
                             .foregroundStyle(.secondary)
@@ -211,14 +224,17 @@ struct SettingsView: View {
     private func fetchAccountBalance() async {
         guard !isLoadingBalance else { return }
         isLoadingBalance = true
+        balanceError = nil
         defer { isLoadingBalance = false }
 
         do {
             let service = OpenRouterService()
             let credits = try await service.fetchCredits()
             accountBalance = credits.formattedBalance
+            balanceError = nil
         } catch {
             accountBalance = nil
+            balanceError = error.toAppError()
         }
     }
 
@@ -948,6 +964,8 @@ struct APIKeySettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var apiKey = ""
     @State private var isVerifying = false
+    @State private var isSaving = false
+    @State private var saveError: AppError?
     @State private var verificationResult: Bool?
 
     var body: some View {
@@ -962,6 +980,16 @@ struct APIKeySettingsView: View {
                             Image(systemName: result ? "checkmark.circle.fill" : "xmark.circle.fill")
                                 .foregroundStyle(result ? .green : .red)
                             Text(result ? "Valid API key" : "Invalid API key")
+                        }
+                    }
+
+                    if let error = saveError {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text(error.recoverySuggestion ?? "Could not save API key")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -990,18 +1018,23 @@ struct APIKeySettingsView: View {
                     Button("Save") {
                         saveAPIKey()
                     }
-                    .disabled(apiKey.isEmpty)
+                    .disabled(apiKey.isEmpty || isSaving)
                 }
             }
         }
     }
 
     private func saveAPIKey() {
+        isSaving = true
+        saveError = nil
+        defer { isSaving = false }
+
         do {
             try KeychainService.saveOpenRouterAPIKey(apiKey)
+            UserDefaults.standard.set(true, forKey: .hasOpenRouterAPIKey)
             dismiss()
         } catch {
-            // Show error state - the key wasn't saved
+            saveError = .storageError(underlying: error)
             verificationResult = false
         }
     }
