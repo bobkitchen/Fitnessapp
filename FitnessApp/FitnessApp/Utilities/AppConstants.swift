@@ -28,6 +28,9 @@ enum UserDefaultsKey: String {
 
     /// Current knowledge base version for migrations
     case knowledgeBaseVersion
+
+    /// Last Strava sync timestamp
+    case lastStravaSyncDate
 }
 
 /// Convenience extension for type-safe UserDefaults access
@@ -54,6 +57,10 @@ extension UserDefaults {
 
     func set(_ value: Data?, forKey key: UserDefaultsKey) {
         set(value, forKey: key.rawValue)
+    }
+
+    func object(forKey key: UserDefaultsKey) -> Any? {
+        object(forKey: key.rawValue)
     }
 }
 

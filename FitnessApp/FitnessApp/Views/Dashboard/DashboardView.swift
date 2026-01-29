@@ -19,6 +19,7 @@ struct DashboardView: View {
     // showingCoachSheet removed - Coach tab available in navigation
     // selectedDate removed - PMC chart moved to Performance tab
     @State private var syncService: WorkoutSyncService?
+    @State private var stravaSyncService: StravaSyncService?
     @State private var hasPerformedInitialSync = false
     @State private var showReadinessDetail = false
     @State private var showGradeExplanation = false
@@ -311,10 +312,14 @@ struct DashboardView: View {
     }
 
     private func refreshData() async {
+        // Sync HealthKit wellness data
         if syncService == nil {
             syncService = WorkoutSyncService(healthKitService: healthKitService)
         }
         await syncService?.performIncrementalSync(modelContext: modelContext, profile: profile)
+
+        // Sync Strava workouts
+        await stravaAutoSync()
     }
 
     private func performInitialSyncIfNeeded() async {
@@ -340,6 +345,17 @@ struct DashboardView: View {
             // Just do incremental sync
             await syncService?.performIncrementalSync(modelContext: modelContext, profile: profile)
         }
+
+        // Auto-sync Strava workouts on launch
+        await stravaAutoSync()
+    }
+
+    private func stravaAutoSync() async {
+        let stravaService = StravaService()
+        if stravaSyncService == nil {
+            stravaSyncService = StravaSyncService(stravaService: stravaService, modelContext: modelContext)
+        }
+        await stravaSyncService?.autoSync()
     }
 }
 

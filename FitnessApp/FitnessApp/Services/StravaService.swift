@@ -217,8 +217,8 @@ final class StravaService: NSObject {
 
     // MARK: - API Calls
 
-    /// Fetch recent activities from Strava
-    func fetchActivities(after: Date? = nil, perPage: Int = 30) async throws -> [StravaActivity] {
+    /// Fetch a single page of activities from Strava
+    func fetchActivities(after: Date? = nil, page: Int = 1, perPage: Int = 200) async throws -> [StravaActivity] {
         try await refreshTokenIfNeeded()
 
         guard let accessToken = StravaTokenManager.getAccessToken() else {
@@ -227,7 +227,8 @@ final class StravaService: NSObject {
 
         var components = URLComponents(string: "\(Self.apiBaseURL)/athlete/activities")!
         var queryItems = [
-            URLQueryItem(name: "per_page", value: String(perPage))
+            URLQueryItem(name: "per_page", value: String(perPage)),
+            URLQueryItem(name: "page", value: String(page))
         ]
 
         if let after = after {
@@ -246,7 +247,6 @@ final class StravaService: NSObject {
         }
 
         if httpResponse.statusCode == 401 {
-            // Token expired during request
             logout()
             throw StravaError.notAuthenticated
         }
@@ -257,17 +257,11 @@ final class StravaService: NSObject {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        // Note: Don't use .convertFromSnakeCase - we have explicit CodingKeys in models
-
-        // Debug: Print raw JSON to see what Strava returns
-        if let jsonString = String(data: data, encoding: .utf8) {
-            print("[Strava] Raw API response (first 2000 chars): \(String(jsonString.prefix(2000)))")
-        }
 
         do {
             let activities = try decoder.decode([StravaActivity].self, from: data)
             lastSyncDate = Date()
-            print("[Strava] Fetched \(activities.count) activities")
+            print("[Strava] Fetched \(activities.count) activities (page \(page))")
             return activities
         } catch let decodingError as DecodingError {
             switch decodingError {
@@ -287,6 +281,28 @@ final class StravaService: NSObject {
             print("[Strava] Other error: \(otherError)")
             throw otherError
         }
+    }
+
+    /// Fetch all activities from Strava with automatic pagination
+    /// - Parameter after: Only fetch activities after this date (defaults to 12 months ago)
+    func fetchAllActivities(after: Date? = nil) async throws -> [StravaActivity] {
+        let afterDate = after ?? Calendar.current.date(byAdding: .month, value: -12, to: Date())!
+        var allActivities: [StravaActivity] = []
+        var page = 1
+        let perPage = 200
+
+        while true {
+            let activities = try await fetchActivities(after: afterDate, page: page, perPage: perPage)
+            allActivities.append(contentsOf: activities)
+
+            if activities.count < perPage {
+                break
+            }
+            page += 1
+        }
+
+        print("[Strava] Fetched \(allActivities.count) total activities across \(page) page(s)")
+        return allActivities
     }
 
     /// Fetch detailed activity with streams (for route data)

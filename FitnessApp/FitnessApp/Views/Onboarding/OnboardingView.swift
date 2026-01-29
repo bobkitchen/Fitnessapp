@@ -3,8 +3,8 @@ import SwiftData
 import UIKit
 import UniformTypeIdentifiers
 
-/// 3-page onboarding flow: Welcome + HealthKit -> TrainingPeaks Import -> Setup Complete
-/// Note: HealthKit sync now only imports wellness data. Workouts come from TrainingPeaks CSV.
+/// 4-page onboarding flow: Welcome + HealthKit -> Connect Strava -> Optional TP CSV -> Sync + Complete
+/// Strava is the primary workout source; TP CSV is optional for historical TSS enrichment.
 struct OnboardingView: View {
     @Binding var hasCompletedOnboarding: Bool
     @Environment(\.modelContext) private var modelContext
@@ -17,6 +17,11 @@ struct OnboardingView: View {
     @State private var syncProgress: SyncProgress = SyncProgress()
     @State private var detectedThresholds: DetectedThresholds?
     @State private var syncError: String?
+
+    // Strava state
+    @State private var stravaService = StravaService()
+    @State private var isConnectingStrava = false
+    @State private var stravaError: String?
 
     // TrainingPeaks import state
     @State private var showingFilePicker = false
@@ -40,7 +45,19 @@ struct OnboardingView: View {
             )
             .tag(0)
 
-            // Page 2: TrainingPeaks Import
+            // Page 2: Connect Strava (primary workout source)
+            StravaConnectPage(
+                isConnecting: isConnectingStrava,
+                isConnected: stravaService.isAuthenticated,
+                athleteName: stravaService.athleteProfile?.fullName,
+                error: stravaError,
+                onConnect: connectStrava,
+                onSkip: { advanceToTPImport() },
+                onContinue: { advanceToTPImport() }
+            )
+            .tag(1)
+
+            // Page 3: Optional TrainingPeaks CSV Import (for TSS enrichment)
             TrainingPeaksImportPage(
                 showingFilePicker: $showingFilePicker,
                 isImporting: csvImportService.isImporting,
@@ -51,7 +68,7 @@ struct OnboardingView: View {
                 onContinue: { advanceToCompletion() },
                 onConfirmImport: { await performCSVImport() }
             )
-            .tag(1)
+            .tag(2)
             .fileImporter(
                 isPresented: $showingFilePicker,
                 allowedContentTypes: [UTType.commaSeparatedText, UTType.plainText],
@@ -60,7 +77,7 @@ struct OnboardingView: View {
                 handleCSVFileSelection(result)
             }
 
-            // Page 3: Sync Progress + Completion
+            // Page 4: Sync Progress + Completion
             SyncProgressPage(
                 isSyncing: isSyncing,
                 isTransitioning: isTransitioning,
@@ -69,9 +86,8 @@ struct OnboardingView: View {
                 error: syncError,
                 onComplete: completeOnboarding
             )
-            .tag(2)
+            .tag(3)
             .onAppear {
-                // Auto-start sync when page appears
                 if !syncStarted && !isSyncing {
                     syncStarted = true
                     startSync()
@@ -81,7 +97,7 @@ struct OnboardingView: View {
         .tabViewStyle(.page(indexDisplayMode: .always))
         .indexViewStyle(.page(backgroundDisplayMode: .always))
         .interactiveDismissDisabled()
-        // Auto-advance to TrainingPeaks import page after HealthKit authorization
+        // Auto-advance to Strava connect page after HealthKit authorization
         .onChange(of: healthKitService.isAuthorized) { _, isAuthorized in
             if isAuthorized && currentPage == 0 {
                 withAnimation {
@@ -91,9 +107,39 @@ struct OnboardingView: View {
         }
     }
 
-    private func advanceToCompletion() {
+    private func advanceToTPImport() {
         withAnimation {
             currentPage = 2
+        }
+    }
+
+    private func advanceToCompletion() {
+        withAnimation {
+            currentPage = 3
+        }
+    }
+
+    private func connectStrava() {
+        isConnectingStrava = true
+        stravaError = nil
+
+        Task { @MainActor in
+            do {
+                guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                      let window = windowScene.windows.first else {
+                    stravaError = "Unable to present login"
+                    isConnectingStrava = false
+                    return
+                }
+                try await stravaService.authenticate(presentationAnchor: window)
+            } catch {
+                if case StravaError.userCancelled = error {
+                    // User cancelled - not an error
+                } else {
+                    stravaError = error.localizedDescription
+                }
+            }
+            isConnectingStrava = false
         }
     }
 
@@ -143,15 +189,16 @@ struct OnboardingView: View {
         guard !parsedWorkouts.isEmpty else { return }
 
         do {
-            let result = try await csvImportService.importWorkouts(parsedWorkouts, into: modelContext)
+            // Use enrichment import: matches TP workouts to existing Strava workouts
+            // and enriches them with TSS data. Unmatched TP workouts create new records.
+            let result = try await csvImportService.enrichImport(parsedWorkouts, into: modelContext)
 
-            // Explicitly save and verify
             try modelContext.save()
 
             tpImportResult = result
             parsedWorkouts = []
             csvPreview = nil
-            print("[Onboarding] TrainingPeaks import complete: \(result.summary)")
+            print("[Onboarding] TrainingPeaks enrichment complete: \(result.summary)")
         } catch {
             tpImportError = error.localizedDescription
             print("[Onboarding] TrainingPeaks import error: \(error)")
@@ -176,22 +223,33 @@ struct OnboardingView: View {
                     try modelContext.save()
                 }
 
-                // Start sync (wellness data only - workouts came from TrainingPeaks import)
-                let syncService = WorkoutSyncService(healthKitService: healthKitService)
+                // Step 1: Initial Strava sync (12 months of workout history)
+                if stravaService.isAuthenticated {
+                    let stravaSyncService = StravaSyncService(
+                        stravaService: stravaService,
+                        modelContext: modelContext
+                    )
+                    do {
+                        let result = try await stravaSyncService.syncAllActivities()
+                        print("[Onboarding] Strava initial sync: \(result.summary)")
+                    } catch {
+                        print("[Onboarding] Strava sync error (continuing): \(error.localizedDescription)")
+                    }
+                }
 
+                // Step 2: Sync HealthKit wellness data
+                let syncService = WorkoutSyncService(healthKitService: healthKitService)
                 await syncService.performInitialSync(modelContext: modelContext, profile: profile)
 
-                // Update progress from service
                 syncProgress = syncService.syncProgress
 
                 if let error = syncService.syncError {
                     syncError = error.localizedDescription
                 }
 
-                // Auto-detect thresholds from imported TrainingPeaks workouts
+                // Step 3: Auto-detect thresholds
                 detectedThresholds = await syncService.autoDetectThresholds(modelContext: modelContext)
 
-                // Apply detected thresholds to profile
                 if let detected = detectedThresholds {
                     if let ftp = detected.estimatedFTP {
                         profile.ftpWatts = ftp
@@ -387,7 +445,123 @@ struct WelcomeHealthKitPage: View {
     }
 }
 
-// MARK: - Page 2: TrainingPeaks Import
+// MARK: - Page 2: Connect Strava
+
+struct StravaConnectPage: View {
+    let isConnecting: Bool
+    let isConnected: Bool
+    let athleteName: String?
+    let error: String?
+    let onConnect: () -> Void
+    let onSkip: () -> Void
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Image(systemName: "figure.outdoor.cycle")
+                .font(.system(size: 80))
+                .foregroundStyle(Color.accentPrimary)
+
+            Text("Connect Strava")
+                .font(AppFont.displaySmall)
+                .foregroundStyle(Color.textPrimary)
+
+            Text("Strava is your primary workout source. All your activities will sync automatically.")
+                .font(AppFont.bodyMedium)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+
+            Spacer()
+
+            VStack(spacing: 12) {
+                OnboardingFeatureRow(icon: "arrow.triangle.2.circlepath", title: "Auto-Sync", subtitle: "Workouts sync every time you open the app")
+                OnboardingFeatureRow(icon: "map", title: "Routes & Metrics", subtitle: "GPS routes, power, HR, and pace data")
+                OnboardingFeatureRow(icon: "chart.bar.fill", title: "TSS Calculated", subtitle: "Training stress auto-calculated for each workout")
+            }
+            .padding(.horizontal, 32)
+
+            Spacer()
+
+            if isConnected {
+                VStack(spacing: 12) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Connected\(athleteName.map { " as \($0)" } ?? "")")
+                            .font(AppFont.labelMedium)
+                            .foregroundStyle(.green)
+                    }
+
+                    Button {
+                        onContinue()
+                    } label: {
+                        Text("Continue")
+                            .font(AppFont.labelLarge)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(Color.accentPrimary)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large))
+                    }
+                    .padding(.horizontal, 32)
+                }
+            } else {
+                VStack(spacing: 12) {
+                    Button {
+                        onConnect()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isConnecting {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "figure.outdoor.cycle")
+                            }
+                            Text(isConnecting ? "Connecting..." : "Connect Strava")
+                        }
+                        .font(AppFont.labelLarge)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color(red: 0.99, green: 0.31, blue: 0.0))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large))
+                    }
+                    .disabled(isConnecting)
+                    .padding(.horizontal, 32)
+
+                    Button {
+                        onSkip()
+                    } label: {
+                        Text("Skip for now")
+                            .font(AppFont.labelMedium)
+                            .foregroundStyle(Color.textTertiary)
+                    }
+                    .disabled(isConnecting)
+
+                    if let error {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text(error)
+                                .font(AppFont.captionSmall)
+                                .foregroundStyle(.orange)
+                        }
+                        .padding(.horizontal, 32)
+                    }
+                }
+            }
+
+            Spacer()
+        }
+        .padding()
+        .background(Color.backgroundPrimary)
+    }
+}
+
+// MARK: - Page 3: TrainingPeaks Import
 
 struct TrainingPeaksImportPage: View {
     @Binding var showingFilePicker: Bool
@@ -408,11 +582,11 @@ struct TrainingPeaksImportPage: View {
                 .font(.system(size: 80))
                 .foregroundStyle(Color.accentPrimary)
 
-            Text("Import Workout History")
+            Text("Import TSS History")
                 .font(AppFont.displaySmall)
                 .foregroundStyle(Color.textPrimary)
 
-            Text("Get accurate TSS, IF, and training zones by importing your workout history from TrainingPeaks")
+            Text("Optionally import TrainingPeaks CSV to enrich your Strava workouts with accurate TSS, training zones, and coach comments")
                 .font(AppFont.bodyMedium)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)

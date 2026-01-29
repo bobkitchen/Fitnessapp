@@ -1,21 +1,11 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
-import HealthKit
-import CoreLocation
 
-/// View for importing workouts from TrainingPeaks (CSV bulk import or URL direct import)
+/// View for importing workouts from TrainingPeaks CSV (TSS enrichment for existing Strava workouts)
 struct TPWorkoutImportView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Environment(HealthKitService.self) private var healthKitService
-
-    // Route enrichment state
-    @State private var isEnrichingRoutes = false
-    @State private var routeEnrichmentResult: RouteEnrichmentResult?
-
-    // Tab selection
-    @State private var selectedTab: ImportTab = .csvImport
 
     // CSV Import state
     @State private var showingFilePicker = false
@@ -25,78 +15,18 @@ struct TPWorkoutImportView: View {
     @State private var csvImportResult: CSVImportResult?
     @State private var csvError: String?
 
-    // URL Import state
-    @State private var urlText = ""
-    @State private var importState: ImportState = .idle
-    @State private var tpWorkoutData: TPWorkoutData?
-    @State private var errorMessage: String?
-    @State private var importedWorkout: WorkoutRecord?
-
-    // Enrichment state (Strava/HealthKit data to merge with TP data)
-    @State private var stravaService = StravaService()
-    @State private var enrichmentData: WorkoutEnrichmentData?
-    @State private var enrichmentSource: String?  // "Strava", "HealthKit", or nil
-
-    // PMC manual entry fields
-    @State private var ctlText = ""
-    @State private var atlText = ""
-    @State private var tsbText = ""
-    @State private var showPMCEntry = false
-
-    // Shared workout data (from Share Extension)
-    var prefilledURL: String?
-
-    private let scraper = TrainingPeaksScraper()
-
-    enum ImportTab: String, CaseIterable {
-        case csvImport = "CSV Import"
-        case urlImport = "URL Import"
-
-        var icon: String {
-            switch self {
-            case .csvImport: return "doc.text"
-            case .urlImport: return "link"
-            }
-        }
-    }
-
-    enum ImportState: Equatable {
-        case idle
-        case fetching
-        case enriching  // NEW: Enriching with Strava/HealthKit data
-        case preview
-        case importing
-        case success
-        case error
-    }
+    // Ignored - kept for compatibility with Share Extension launch
+    var prefilledURL: String? = nil
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Tab selector
-                Picker("Import Type", selection: $selectedTab) {
-                    ForEach(ImportTab.allCases, id: \.self) { tab in
-                        Label(tab.rawValue, systemImage: tab.icon)
-                            .tag(tab)
-                    }
+            ScrollView {
+                VStack(spacing: Spacing.lg) {
+                    csvImportSection
                 }
-                .pickerStyle(.segmented)
                 .padding()
-
-                // Content based on selected tab
-                ScrollView {
-                    VStack(spacing: Spacing.lg) {
-                        switch selectedTab {
-                        case .csvImport:
-                            csvImportSection
-                        case .urlImport:
-                            urlImportSection
-                        }
-                    }
-                    .padding()
-                }
             }
-            .navigationTitle("Import TrainingPeaks")
+            .navigationTitle("Import TrainingPeaks CSV")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -109,19 +39,6 @@ struct TPWorkoutImportView: View {
                 allowsMultipleSelection: false
             ) { result in
                 handleFileSelection(result)
-            }
-            .sheet(item: $importedWorkout) { workout in
-                WorkoutDetailView(workout: workout)
-                    .onDisappear {
-                        dismiss()
-                    }
-            }
-            .task {
-                if let url = prefilledURL, !url.isEmpty {
-                    selectedTab = .urlImport
-                    urlText = url
-                    await importWorkout()
-                }
             }
         }
     }
@@ -137,10 +54,10 @@ struct TPWorkoutImportView: View {
                     .font(.system(size: 44))
                     .foregroundStyle(.blue)
 
-                Text("Import Workout History")
+                Text("Enrich Workouts with TSS")
                     .font(.headline)
 
-                Text("Export your workouts from TrainingPeaks as CSV and import them here to get accurate TSS, IF, and zone data.")
+                Text("Import your TrainingPeaks CSV to add accurate TSS, IF, training zones, and coach comments to your existing Strava workouts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -199,9 +116,8 @@ struct TPWorkoutImportView: View {
 
             // Stats
             HStack(spacing: 16) {
-                StatItem(label: "New", value: "\(preview.newWorkoutsCount)")
-                StatItem(label: "Duplicates", value: "\(preview.duplicatesCount)")
-                StatItem(label: "Total TSS", value: String(format: "%.0f", preview.totalTSS))
+                StatItem(value: "\(preview.newWorkoutsCount + preview.duplicatesCount)", label: "Workouts", icon: "figure.mixed.cardio")
+                StatItem(value: String(format: "%.0f", preview.totalTSS), label: "Total TSS", icon: "bolt.fill")
             }
 
             // Date range
@@ -221,7 +137,7 @@ struct TPWorkoutImportView: View {
                     ForEach(Array(preview.byCategory.sorted { $0.value > $1.value }), id: \.key) { category, count in
                         HStack(spacing: 4) {
                             Image(systemName: category.icon)
-                                .foregroundStyle(category.themeColor)
+                                .foregroundStyle(.secondary)
                             Text("\(count)")
                                 .font(.caption)
                         }
@@ -235,11 +151,11 @@ struct TPWorkoutImportView: View {
             Button {
                 Task { await performCSVImport() }
             } label: {
-                Text("Import \(preview.newWorkoutsCount) Workouts")
+                Text("Import & Enrich")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(preview.isEmpty)
+            .disabled(preview.isEmpty && preview.duplicatesCount == 0)
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -255,14 +171,6 @@ struct TPWorkoutImportView: View {
             Text(csvImportService.currentPhase.description)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            // Show workout count during importing phase
-            if csvImportService.currentPhase == .importing, let preview = csvPreview {
-                let currentCount = Int(csvImportService.importProgress * Double(preview.newWorkoutsCount))
-                Text("\(currentCount) of \(preview.newWorkoutsCount) workouts")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -290,27 +198,26 @@ struct TPWorkoutImportView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Route enrichment status
-            if isEnrichingRoutes {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Fetching GPS routes...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let routeResult = routeEnrichmentResult, routeResult.enrichedCount > 0 {
-                Label("\(routeResult.enrichedCount) route maps added", systemImage: "map.fill")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-            }
-
             Button("Import More") {
                 resetCSVState()
             }
             .buttonStyle(.bordered)
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func errorCard(message: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -344,532 +251,7 @@ struct TPWorkoutImportView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - URL Import Section
-
-    @ViewBuilder
-    private var urlImportSection: some View {
-        VStack(spacing: Spacing.lg) {
-            switch importState {
-            case .idle, .fetching, .error:
-                urlInputCard
-            case .enriching:
-                enrichingCard
-            case .preview, .importing:
-                workoutPreviewCard
-            case .success:
-                urlSuccessCard
-            }
-        }
-        .animation(AppAnimation.springSmooth, value: importState)
-    }
-
-    // MARK: - URL Input Card
-
-    @ViewBuilder
-    private var urlInputCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Import TrainingPeaks Workout")
-                .sectionHeaderStyle()
-
-            VStack(spacing: Spacing.md) {
-                Text("Paste a shared TrainingPeaks workout URL to import it directly into your training log.")
-                    .font(AppFont.bodyMedium)
-                    .foregroundStyle(Color.textSecondary)
-
-                HStack(spacing: Spacing.xs) {
-                    TextField("https://trainingpeaks.com/...", text: $urlText)
-                        .textFieldStyle(.roundedBorder)
-                        .textContentType(.URL)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .disabled(importState == .fetching)
-
-                    if !urlText.isEmpty {
-                        Button {
-                            urlText = ""
-                            resetState()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(Color.textSecondary)
-                        }
-                    }
-                }
-
-                if importState == .fetching {
-                    HStack(spacing: Spacing.xs) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Fetching workout data...")
-                            .font(AppFont.bodySmall)
-                            .foregroundStyle(Color.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if importState == .error, let error = errorMessage {
-                    HStack(spacing: Spacing.xs) {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(Color.statusLow)
-                        Text(error)
-                            .font(AppFont.bodySmall)
-                            .foregroundStyle(Color.statusLow)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                Button {
-                    Task { await importWorkout() }
-                } label: {
-                    HStack {
-                        if importState == .fetching {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                        }
-                        Text(importState == .fetching ? "Fetching..." : "Import Workout")
-                            .font(AppFont.bodyMedium)
-                            .fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.accentPrimary)
-                .disabled(urlText.isEmpty || importState == .fetching)
-            }
-            .padding(Spacing.md)
-            .cardBackground(cornerRadius: CornerRadius.large)
-        }
-        .animatedAppearance(index: 0)
-    }
-
-    // MARK: - Enriching Card
-
-    @ViewBuilder
-    private var enrichingCard: some View {
-        VStack(spacing: Spacing.md) {
-            ProgressView()
-                .controlSize(.regular)
-            Text("Checking Strava & HealthKit for route data...")
-                .font(AppFont.bodyMedium)
-                .foregroundStyle(Color.textSecondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(Spacing.xl)
-        .cardBackground(cornerRadius: CornerRadius.large)
-    }
-
-    // MARK: - Workout Preview Card
-
-    @ViewBuilder
-    private var workoutPreviewCard: some View {
-        if let tpData = tpWorkoutData {
-            // Use enriched data if available
-            let displayTitle = enrichmentData?.title ?? tpData.title ?? tpData.activityType
-            let displayDate = enrichmentData?.preciseStartDate ?? tpData.startDate
-            let hasEnrichedRoute = enrichmentData?.routeCoordinates != nil
-
-            VStack(alignment: .leading, spacing: Spacing.md) {
-                // Activity header
-                HStack(spacing: Spacing.xs) {
-                    Image(systemName: tpData.activityCategory.icon)
-                        .font(.title3)
-                        .foregroundStyle(tpData.activityCategory.themeColor)
-                    Text(displayTitle)
-                        .font(AppFont.titleMedium)
-                        .foregroundStyle(Color.textPrimary)
-                }
-
-                // Enrichment badge (if enriched)
-                if let source = enrichmentSource {
-                    HStack(spacing: Spacing.xs) {
-                        Image(systemName: hasEnrichedRoute ? "map.fill" : "clock.fill")
-                            .font(.caption)
-                        Text(hasEnrichedRoute ? "Route from \(source)" : "Time from \(source)")
-                            .font(AppFont.captionSmall)
-                    }
-                    .foregroundStyle(Color.statusOptimal)
-                    .padding(.horizontal, Spacing.sm)
-                    .padding(.vertical, Spacing.xxs)
-                    .background(Color.statusOptimal.opacity(0.15))
-                    .clipShape(Capsule())
-                }
-
-                // Date + time + duration
-                HStack(spacing: Spacing.xs) {
-                    Text(displayDate, style: .date)
-                    if enrichmentData?.preciseStartDate != nil {
-                        Text(displayDate, style: .time)
-                    }
-                    Text("\u{00B7}")
-                    Text(formatDuration(tpData.duration))
-                }
-                .font(AppFont.bodyMedium)
-                .foregroundStyle(Color.textSecondary)
-
-                // Metric row
-                HStack(spacing: Spacing.lg) {
-                    URLMetricItem(label: "TSS", value: "\(Int(tpData.tss))")
-                    URLMetricItem(
-                        label: "IF",
-                        value: tpData.intensityFactor.map { String(format: "%.2f", $0) } ?? "--"
-                    )
-                    URLMetricItem(label: "Distance", value: formatDistance(tpData.distance))
-                }
-                .padding(.vertical, Spacing.sm)
-
-                // PMC entry (collapsed disclosure)
-                DisclosureGroup("PMC Values (Optional)", isExpanded: $showPMCEntry) {
-                    pmcEntryContent
-                }
-                .font(AppFont.bodyMedium)
-                .foregroundStyle(Color.textSecondary)
-                .tint(Color.accentPrimary)
-
-                // Import button
-                Button {
-                    Task { await confirmImport() }
-                } label: {
-                    HStack {
-                        if importState == .importing {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                        }
-                        Text(importState == .importing ? "Importing..." : "Import Workout")
-                            .font(AppFont.bodyMedium)
-                            .fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.accentPrimary)
-                .disabled(importState == .importing || (hasPMCValues && parsedPMCValues == nil))
-            }
-            .padding(Spacing.md)
-            .cardBackground(cornerRadius: CornerRadius.large)
-            .animatedAppearance(index: 0)
-        }
-    }
-
-    // MARK: - URL Success Card
-
-    @ViewBuilder
-    private var urlSuccessCard: some View {
-        VStack(spacing: Spacing.sm) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(Color.statusOptimal)
-
-            Text("Workout Imported!")
-                .font(AppFont.titleMedium)
-                .foregroundStyle(Color.textPrimary)
-
-            Text("Added to your training log")
-                .font(AppFont.bodyMedium)
-                .foregroundStyle(Color.textSecondary)
-
-            Button("Import Another") {
-                urlText = ""
-                resetState()
-            }
-            .buttonStyle(.bordered)
-            .tint(Color.accentPrimary)
-        }
-        .padding(Spacing.md)
-        .cardBackground(cornerRadius: CornerRadius.large)
-        .animatedAppearance(index: 0)
-    }
-
-    // MARK: - URL Metric Item
-
-    private struct URLMetricItem: View {
-        let label: String
-        let value: String
-
-        var body: some View {
-            VStack(spacing: Spacing.xxs) {
-                Text(value)
-                    .font(AppFont.metricSmall)
-                    .foregroundStyle(Color.textPrimary)
-                Text(label)
-                    .font(AppFont.labelMedium)
-                    .foregroundStyle(Color.textSecondary)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    // MARK: - PMC Entry
-
-    private var hasPMCValues: Bool {
-        !ctlText.isEmpty || !atlText.isEmpty || !tsbText.isEmpty
-    }
-
-    private var parsedPMCValues: (ctl: Double, atl: Double, tsb: Double)? {
-        guard let ctl = Double(ctlText),
-              let atl = Double(atlText),
-              let tsb = Double(tsbText),
-              ctl >= 0 && ctl <= 200,
-              atl >= 0 && atl <= 300,
-              tsb >= -100 && tsb <= 100
-        else { return nil }
-        return (ctl, atl, tsb)
-    }
-
-    @ViewBuilder
-    private var pmcEntryContent: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Enter your current PMC values from TrainingPeaks to calibrate fitness tracking")
-                .font(AppFont.bodySmall)
-                .foregroundStyle(Color.textSecondary)
-                .padding(.top, Spacing.xs)
-
-            HStack(spacing: Spacing.md) {
-                pmcField(label: "CTL", hint: "Fitness", text: $ctlText)
-                pmcField(label: "ATL", hint: "Fatigue", text: $atlText)
-                pmcField(label: "TSB", hint: "Form", text: $tsbText)
-            }
-
-            if hasPMCValues && parsedPMCValues == nil {
-                Text("Enter valid numbers (CTL: 0-200, ATL: 0-300, TSB: -100 to 100)")
-                    .font(AppFont.bodySmall)
-                    .foregroundStyle(Color.statusLow)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func pmcField(label: String, hint: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.xxs) {
-            Text(label)
-                .font(AppFont.labelMedium)
-                .foregroundStyle(Color.textSecondary)
-            TextField(hint, text: text)
-                .keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 70)
-        }
-    }
-
-    // MARK: - Shared Card Components
-
-    @ViewBuilder
-    private func errorCard(message: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                Text("Error")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-            }
-
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Button("Try Again") {
-                resetState()
-            }
-            .buttonStyle(.bordered)
-        }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    // MARK: - Helper Views
-
-    struct StatItem: View {
-        let label: String
-        let value: String
-
-        var body: some View {
-            VStack(spacing: 2) {
-                Text(value)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Text(label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    // MARK: - URL Import Actions
-
-    private func importWorkout() async {
-        guard !urlText.isEmpty else { return }
-
-        resetState()
-        importState = .fetching
-
-        do {
-            let tpData = try await scraper.fetchWorkout(from: urlText)
-            tpWorkoutData = tpData
-
-            print("[TPImport] Parsed TP workout: \(tpData.activityType), TSS=\(tpData.tss), duration=\(tpData.duration)s, date=\(tpData.startDate)")
-
-            if checkForDuplicate(tpData: tpData) {
-                errorMessage = "This workout appears to already be imported"
-                importState = .error
-                return
-            }
-
-            // Enrich with Strava/HealthKit data before showing preview
-            await enrichWorkoutData(tpData)
-
-            importState = .preview
-        } catch {
-            errorMessage = error.localizedDescription
-            importState = .error
-            print("[TPImport] Error: \(error)")
-        }
-    }
-
-    private func confirmImport() async {
-        guard let tpData = tpWorkoutData else { return }
-
-        importState = .importing
-
-        do {
-            let record = createWorkoutRecord(from: tpData)
-            modelContext.insert(record)
-
-            if let pmcValues = parsedPMCValues {
-                let learningEngine = TSSLearningEngine(modelContext: modelContext)
-                try await learningEngine.recordCombinedCalibration(
-                    workout: record,
-                    trainingPeaksTSS: tpData.tss,
-                    trainingPeaksIF: tpData.intensityFactor,
-                    pmcValues: pmcValues,
-                    matchConfidence: 1.0
-                )
-            }
-
-            try modelContext.save()
-
-            await recalculatePMCAfterImport(from: tpData.startDate)
-
-            importedWorkout = record
-        } catch {
-            errorMessage = error.localizedDescription
-            importState = .error
-        }
-    }
-
-    private func createWorkoutRecord(from tpData: TPWorkoutData) -> WorkoutRecord {
-        // Use scraped IF, or compute from TSS and duration: IF = sqrt(TSS / (hours * 100))
-        let intensityFactor: Double
-        if let scrapedIF = tpData.intensityFactor, scrapedIF > 0 {
-            intensityFactor = scrapedIF
-        } else if tpData.tss > 0 && tpData.duration > 0 {
-            let hours = tpData.duration / 3600.0
-            intensityFactor = sqrt(tpData.tss / (hours * 100.0))
-        } else {
-            intensityFactor = 0
-        }
-
-        // Use enrichment data for title and time if available
-        let title = enrichmentData?.title ?? tpData.title
-        let startDate = enrichmentData?.preciseStartDate ?? tpData.startDate
-
-        let record = WorkoutRecord(
-            healthKitUUID: nil,
-            activityType: tpData.activityType,
-            activityCategory: tpData.activityCategory,
-            title: title,
-            startDate: startDate,
-            endDate: startDate.addingTimeInterval(tpData.duration),
-            durationSeconds: tpData.duration,
-            distanceMeters: tpData.distance,
-            tss: tpData.tss,
-            tssType: .trainingPeaks,
-            intensityFactor: intensityFactor
-        )
-        record.source = .trainingPeaks
-
-        // Use enrichment data for metrics, falling back to TP data
-        record.averageHeartRate = enrichmentData?.averageHeartRate ?? tpData.averageHR
-        record.maxHeartRate = enrichmentData?.maxHeartRate
-        record.averagePower = enrichmentData?.averagePower ?? tpData.averagePower
-        record.normalizedPower = enrichmentData?.normalizedPower
-        record.totalAscent = enrichmentData?.totalElevationGain
-        record.averagePaceSecondsPerKm = tpData.averagePace
-
-        // Link to Strava if enriched from Strava
-        if let stravaId = enrichmentData?.stravaActivityId {
-            record.stravaActivityId = stravaId
-        }
-
-        // Use route from enrichment (Strava/HealthKit) or TP
-        if let enrichedCoords = enrichmentData?.routeCoordinates, !enrichedCoords.isEmpty {
-            record.hasRoute = true
-            record.routeData = WorkoutRecord.encodeRoute(enrichedCoords)
-        } else if let tpCoords = tpData.routeCoordinates, !tpCoords.isEmpty {
-            record.hasRoute = true
-            record.routeData = WorkoutRecord.encodeRoute(tpCoords)
-        }
-
-        return record
-    }
-
-    private func checkForDuplicate(tpData: TPWorkoutData) -> Bool {
-        let oneHourBefore = tpData.startDate.addingTimeInterval(-3600)
-        let oneHourAfter = tpData.startDate.addingTimeInterval(3600)
-        let category = tpData.activityCategory.rawValue
-
-        let descriptor = FetchDescriptor<WorkoutRecord>(
-            predicate: #Predicate {
-                $0.startDate >= oneHourBefore &&
-                $0.startDate <= oneHourAfter &&
-                $0.activityCategoryRaw == category
-            }
-        )
-
-        guard let matches = try? modelContext.fetch(descriptor) else { return false }
-
-        for match in matches {
-            let durationRatio = match.durationSeconds / tpData.duration
-            if durationRatio >= 0.8 && durationRatio <= 1.2 {
-                return true
-            }
-        }
-        return false
-    }
-
-    private func resetState() {
-        importState = .idle
-        tpWorkoutData = nil
-        errorMessage = nil
-        ctlText = ""
-        atlText = ""
-        tsbText = ""
-        showPMCEntry = false
-        enrichmentData = nil
-        enrichmentSource = nil
-    }
-
-    // MARK: - Formatting Helpers
-
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let hrs = Int(seconds) / 3600
-        let mins = (Int(seconds) % 3600) / 60
-        let secs = Int(seconds) % 60
-        if hrs > 0 {
-            return String(format: "%d:%02d:%02d", hrs, mins, secs)
-        }
-        return String(format: "%d:%02d", mins, secs)
-    }
-
-    private func formatDistance(_ meters: Double?) -> String {
-        guard let meters = meters, meters > 0 else { return "--" }
-        return String(format: "%.1f km", meters / 1000.0)
-    }
-
-    // MARK: - CSV Import Actions
+    // MARK: - Actions
 
     private func handleFileSelection(_ result: Result<[URL], Error>) {
         csvError = nil
@@ -886,10 +268,8 @@ struct TPWorkoutImportView: View {
                 do {
                     parsedWorkouts = try await csvImportService.parseCSV(from: url)
 
-                    // Fetch existing workouts for preview
                     let descriptor = FetchDescriptor<WorkoutRecord>()
                     let existingWorkouts = (try? modelContext.fetch(descriptor)) ?? []
-
                     csvPreview = csvImportService.previewImport(parsedWorkouts, existingWorkouts: existingWorkouts)
 
                     print("[CSVImport] Parsed \(parsedWorkouts.count) workouts, \(csvPreview?.newWorkoutsCount ?? 0) new")
@@ -911,23 +291,16 @@ struct TPWorkoutImportView: View {
         csvImportResult = nil
 
         do {
-            let result = try await csvImportService.importWorkouts(parsedWorkouts, into: modelContext)
+            // Use enrichment import: matches TP workouts to existing Strava workouts
+            let result = try await csvImportService.enrichImport(parsedWorkouts, into: modelContext)
             csvImportResult = result
 
-            // Recalculate PMC after import
-            if result.importedCount > 0, let dateRange = result.dateRange {
+            // Recalculate PMC after enrichment
+            if (result.importedCount > 0 || result.enrichedCount > 0), let dateRange = result.dateRange {
                 await recalculatePMCAfterImport(from: dateRange.lowerBound)
-
-                // Enrich routes from HealthKit
-                isEnrichingRoutes = true
-                let enrichService = RouteEnrichmentService(healthKitService: healthKitService)
-                routeEnrichmentResult = await enrichService.enrichRoutes(
-                    modelContext: modelContext, dateRange: dateRange
-                )
-                isEnrichingRoutes = false
             }
 
-            print("[CSVImport] Import complete: \(result.summary)")
+            print("[CSVImport] Enrichment complete: \(result.summary)")
         } catch {
             csvError = error.localizedDescription
             print("[CSVImport] Import error: \(error)")
@@ -935,7 +308,6 @@ struct TPWorkoutImportView: View {
     }
 
     private func recalculatePMCAfterImport(from startDate: Date) async {
-        // Fetch all workouts from start date
         let descriptor = FetchDescriptor<WorkoutRecord>(
             predicate: #Predicate { $0.startDate >= startDate },
             sortBy: [SortDescriptor(\.startDate, order: .forward)]
@@ -943,12 +315,10 @@ struct TPWorkoutImportView: View {
 
         guard let workouts = try? modelContext.fetch(descriptor), !workouts.isEmpty else { return }
 
-        // Group by day and recalculate PMC
         let calendar = Calendar.current
         var currentDate = calendar.startOfDay(for: startDate)
         let today = calendar.startOfDay(for: Date())
 
-        // Get previous day's metrics for seed values
         var previousCTL: Double = 0
         var previousATL: Double = 0
 
@@ -963,22 +333,18 @@ struct TPWorkoutImportView: View {
             }
         }
 
-        // Process each day
         while currentDate <= today {
             let nextDate = calendar.date(byAdding: .day, value: 1, to: currentDate)!
 
-            // Get workouts for this day
             let dayWorkouts = workouts.filter { workout in
                 workout.startDate >= currentDate && workout.startDate < nextDate
             }
             let dailyTSS = dayWorkouts.reduce(0) { $0 + $1.tss }
 
-            // Calculate new CTL and ATL
             let newCTL = PMCCalculator.calculateCTL(previousCTL: previousCTL, todayTSS: dailyTSS)
             let newATL = PMCCalculator.calculateATL(previousATL: previousATL, todayTSS: dailyTSS)
             let newTSB = newCTL - newATL
 
-            // Get or create DailyMetrics for this day
             let metricsPredicate = #Predicate<DailyMetrics> { metrics in
                 metrics.date >= currentDate && metrics.date < nextDate
             }
@@ -1016,7 +382,6 @@ struct TPWorkoutImportView: View {
         csvImportResult = nil
         csvError = nil
         csvImportService = TPCSVImportService()
-        routeEnrichmentResult = nil
     }
 
     private func formatDateRange(_ range: ClosedRange<Date>) -> String {
@@ -1024,180 +389,11 @@ struct TPWorkoutImportView: View {
         formatter.dateStyle = .medium
         return "\(formatter.string(from: range.lowerBound)) - \(formatter.string(from: range.upperBound))"
     }
-
-    // MARK: - Workout Enrichment
-
-    /// Enrich TP workout data with Strava and HealthKit data before showing preview
-    private func enrichWorkoutData(_ tpData: TPWorkoutData) async {
-        importState = .enriching
-
-        // Try Strava first (has titles, routes, precise times)
-        if stravaService.isAuthenticated {
-            if let stravaEnrichment = await fetchStravaEnrichment(for: tpData) {
-                enrichmentData = stravaEnrichment
-                enrichmentSource = "Strava"
-                print("[TPImport] Enriched with Strava: title=\(stravaEnrichment.title ?? "nil"), hasRoute=\(stravaEnrichment.routeCoordinates != nil)")
-                return
-            }
-        }
-
-        // Fall back to HealthKit for route data
-        if let hkEnrichment = await fetchHealthKitEnrichment(for: tpData) {
-            enrichmentData = hkEnrichment
-            enrichmentSource = "Apple Watch"
-            print("[TPImport] Enriched with HealthKit route")
-            return
-        }
-
-        // No enrichment available
-        enrichmentData = nil
-        enrichmentSource = nil
-        print("[TPImport] No enrichment data available")
-    }
-
-    /// Fetch matching Strava activity for enrichment
-    private func fetchStravaEnrichment(for tpData: TPWorkoutData) async -> WorkoutEnrichmentData? {
-        do {
-            // Fetch more activities to ensure we capture the right one
-            // Look 14 days before the workout date
-            let startDate = Calendar.current.date(byAdding: .day, value: -14, to: tpData.startDate)
-            let activities = try await stravaService.fetchActivities(after: startDate, perPage: 200)
-
-            print("[TPImport] Strava enrichment: fetched \(activities.count) activities")
-            print("[TPImport] Looking for: type=\(tpData.activityType) date=\(tpData.startDate) dur=\(Int(tpData.duration))s dist=\(Int(tpData.distance ?? 0))m")
-
-            // Find matching activity by date, duration, and distance
-            // Allow ±1 day window to handle timezone discrepancies
-            let tpCalendarDay = Calendar.current.startOfDay(for: tpData.startDate)
-            let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: tpCalendarDay)!
-            let dayAfter = Calendar.current.date(byAdding: .day, value: 1, to: tpCalendarDay)!
-
-            // First pass: try to find exact duration + distance match within ±1 day
-            for activity in activities {
-                let stravaCalendarDay = Calendar.current.startOfDay(for: activity.startDate)
-
-                // Must be within ±1 day of TP date
-                let dateInRange = stravaCalendarDay >= dayBefore && stravaCalendarDay <= dayAfter
-                if dateInRange {
-                    // Log candidate activities within date range for debugging
-                    let durationDiff = abs(activity.durationSeconds - tpData.duration) / max(tpData.duration, 1)
-                    let tpDistance = tpData.distance ?? 0
-                    let distanceDiff = tpDistance > 0 && activity.distanceMeters > 0
-                        ? abs(activity.distanceMeters - tpDistance) / tpDistance
-                        : 0
-                    print("[TPImport] Candidate: '\(activity.displayName)' type=\(activity.activityType) date=\(activity.startDate) dur=\(Int(activity.durationSeconds))s (diff:\(Int(durationDiff * 100))%) dist=\(Int(activity.distanceMeters))m (diff:\(Int(distanceDiff * 100))%)")
-                }
-                guard dateInRange else { continue }
-
-                // Check duration match (within 10% - more lenient)
-                let durationDiff = abs(activity.durationSeconds - tpData.duration) / max(tpData.duration, 1)
-                guard durationDiff <= 0.10 else { continue }
-
-                // Check distance match if available (within 15% - more lenient)
-                if let tpDistance = tpData.distance, tpDistance > 0, activity.distanceMeters > 0 {
-                    let distanceDiff = abs(activity.distanceMeters - tpDistance) / tpDistance
-                    guard distanceDiff <= 0.15 else { continue }
-                }
-
-                print("[TPImport] Strava match found: '\(activity.displayName)' on \(activity.startDate)")
-
-                // Found a match! Extract enrichment data
-                var routeCoords: [(latitude: Double, longitude: Double)]?
-                if let polyline = activity.map?.summaryPolyline, !polyline.isEmpty {
-                    routeCoords = PolylineDecoder.decode(polyline)
-                }
-
-                return WorkoutEnrichmentData(
-                    title: activity.name,
-                    preciseStartDate: activity.startDate,
-                    routeCoordinates: routeCoords,
-                    stravaActivityId: activity.id,
-                    averageHeartRate: activity.averageHeartrate.map { Int($0) },
-                    maxHeartRate: activity.maxHeartrate.map { Int($0) },
-                    averagePower: activity.averageWatts.map { Int($0) },
-                    normalizedPower: activity.weightedAverageWatts,
-                    totalElevationGain: activity.totalElevationGain
-                )
-            }
-
-            // No match found - log what we were looking for
-            print("[TPImport] No Strava match found. Looking for: duration=\(Int(tpData.duration))s, distance=\(Int(tpData.distance ?? 0))m, date=\(tpData.startDate)")
-            if !activities.isEmpty {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd"
-                let activityDates = Set(activities.map { dateFormatter.string(from: $0.startDate) })
-                print("[TPImport] Available Strava dates: \(activityDates.sorted().suffix(10).joined(separator: ", "))")
-            }
-
-            return nil
-        } catch {
-            print("[TPImport] Strava enrichment error: \(error)")
-            return nil
-        }
-    }
-
-    /// Fetch matching HealthKit workout for route enrichment
-    private func fetchHealthKitEnrichment(for tpData: TPWorkoutData) async -> WorkoutEnrichmentData? {
-        do {
-            // Fetch HealthKit workouts from ±1 day to handle timezone issues
-            let dayStart = Calendar.current.startOfDay(for: tpData.startDate)
-            let searchStart = Calendar.current.date(byAdding: .day, value: -1, to: dayStart)!
-            let dayEnd = Calendar.current.date(byAdding: .day, value: 2, to: dayStart)!
-
-            let hkWorkouts = try await healthKitService.fetchWorkouts(from: searchStart, to: dayEnd)
-
-            // Find matching workout by duration
-            for hkWorkout in hkWorkouts {
-                let durationDiff = abs(hkWorkout.duration - tpData.duration) / max(tpData.duration, 1)
-                guard durationDiff <= 0.05 else { continue }
-
-                // Try to get route
-                let locations = try await healthKitService.fetchWorkoutRoute(for: hkWorkout)
-                guard !locations.isEmpty else { continue }
-
-                // Downsample for storage
-                let downsampled = HealthKitService.downsampleLocations(locations, maxPoints: 300)
-                let routeCoords = downsampled.map { (latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
-
-                return WorkoutEnrichmentData(
-                    title: nil,  // HealthKit doesn't have good titles
-                    preciseStartDate: hkWorkout.startDate,
-                    routeCoordinates: routeCoords,
-                    stravaActivityId: nil,
-                    averageHeartRate: nil,
-                    maxHeartRate: nil,
-                    averagePower: nil,
-                    normalizedPower: nil,
-                    totalElevationGain: nil
-                )
-            }
-
-            return nil
-        } catch {
-            print("[TPImport] HealthKit enrichment error: \(error)")
-            return nil
-        }
-    }
-}
-
-// MARK: - Enrichment Data
-
-/// Data extracted from Strava or HealthKit to enrich a TP workout
-struct WorkoutEnrichmentData {
-    let title: String?
-    let preciseStartDate: Date?
-    let routeCoordinates: [(latitude: Double, longitude: Double)]?
-    let stravaActivityId: Int?
-    let averageHeartRate: Int?
-    let maxHeartRate: Int?
-    let averagePower: Int?
-    let normalizedPower: Int?
-    let totalElevationGain: Double?
 }
 
 // MARK: - Preview
 
 #Preview {
     TPWorkoutImportView()
-        .modelContainer(for: [WorkoutRecord.self, TSSScalingProfile.self, TSSCalibrationDataPoint.self], inMemory: true)
+        .modelContainer(for: [WorkoutRecord.self, DailyMetrics.self], inMemory: true)
 }

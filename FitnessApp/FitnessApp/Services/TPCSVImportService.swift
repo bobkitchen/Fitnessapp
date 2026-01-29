@@ -9,12 +9,29 @@ struct CSVImportResult: Sendable {
     let skippedCount: Int
     let duplicateCount: Int
     let errorCount: Int
+    let enrichedCount: Int
     let dateRange: ClosedRange<Date>?
     let errors: [String]
 
+    init(totalRows: Int, importedCount: Int, skippedCount: Int, duplicateCount: Int, errorCount: Int, enrichedCount: Int = 0, dateRange: ClosedRange<Date>?, errors: [String]) {
+        self.totalRows = totalRows
+        self.importedCount = importedCount
+        self.skippedCount = skippedCount
+        self.duplicateCount = duplicateCount
+        self.errorCount = errorCount
+        self.enrichedCount = enrichedCount
+        self.dateRange = dateRange
+        self.errors = errors
+    }
+
     var summary: String {
         var parts: [String] = []
-        parts.append("\(importedCount) imported")
+        if enrichedCount > 0 {
+            parts.append("\(enrichedCount) enriched with TSS")
+        }
+        if importedCount > 0 {
+            parts.append("\(importedCount) new workouts")
+        }
         if duplicateCount > 0 {
             parts.append("\(duplicateCount) duplicates skipped")
         }
@@ -414,6 +431,163 @@ final class TPCSVImportService {
         record.source = .trainingPeaks
 
         return record
+    }
+
+    // MARK: - TSS Enrichment Import
+
+    /// Import TP CSV as TSS enrichment for existing Strava-created workouts.
+    /// For each TP workout:
+    /// - Match to existing workout: same calendar day, same activity category, duration within 15%
+    /// - If match found: update TSS, IF, zone distributions, RPE, feeling, comments
+    /// - If no match: create new WorkoutRecord (for TP-only workouts)
+    func enrichImport(_ workouts: [TPWorkoutImport], into context: ModelContext) async throws -> CSVImportResult {
+        isImporting = true
+        currentPhase = .validating
+        importProgress = 0
+
+        defer { isImporting = false }
+
+        // Fetch all existing workouts for matching
+        let descriptor = FetchDescriptor<WorkoutRecord>(
+            sortBy: [SortDescriptor(\.startDate, order: .reverse)]
+        )
+        let existingWorkouts = (try? context.fetch(descriptor)) ?? []
+
+        currentPhase = .importing
+
+        var enrichedCount = 0
+        var newCount = 0
+        var skippedCount = 0
+        var errors: [String] = []
+        var dates: [Date] = []
+
+        let totalWorkouts = workouts.count
+
+        for (index, tpWorkout) in workouts.enumerated() {
+            importProgress = Double(index) / Double(max(totalWorkouts, 1))
+
+            guard let tss = tpWorkout.tss, tss > 0 else {
+                skippedCount += 1
+                continue
+            }
+
+            // Try to find a matching existing workout
+            if let match = findMatchingWorkout(for: tpWorkout, in: existingWorkouts) {
+                enrichWorkout(match, with: tpWorkout)
+                enrichedCount += 1
+                dates.append(match.startDate)
+            } else {
+                // No match - create new WorkoutRecord for TP-only workouts
+                let record = mapToWorkoutRecord(tpWorkout)
+                context.insert(record)
+                newCount += 1
+                dates.append(record.startDate)
+            }
+        }
+
+        do {
+            try context.save()
+        } catch {
+            throw CSVImportError.parsingError("Failed to save: \(error.localizedDescription)")
+        }
+
+        currentPhase = .complete
+        importProgress = 1.0
+
+        let dateRange: ClosedRange<Date>?
+        if let minDate = dates.min(), let maxDate = dates.max() {
+            dateRange = minDate...maxDate
+        } else {
+            dateRange = nil
+        }
+
+        let result = CSVImportResult(
+            totalRows: workouts.count,
+            importedCount: newCount,
+            skippedCount: skippedCount,
+            duplicateCount: 0,
+            errorCount: errors.count,
+            enrichedCount: enrichedCount,
+            dateRange: dateRange,
+            errors: errors
+        )
+
+        lastResult = result
+        print("[TPCSVImport] Enrichment complete: \(result.summary)")
+        return result
+    }
+
+    /// Find a matching existing workout for a TP workout
+    /// Criteria: same calendar day, same activity category, duration within 15%
+    private func findMatchingWorkout(for tpWorkout: TPWorkoutImport, in workouts: [WorkoutRecord]) -> WorkoutRecord? {
+        let tpDay = Calendar.current.startOfDay(for: tpWorkout.workoutDay)
+        let tpDuration = tpWorkout.durationSeconds ?? 0
+        let tpCategory = tpWorkout.activityCategory
+
+        return workouts.first { workout in
+            let workoutDay = Calendar.current.startOfDay(for: workout.startDate)
+            guard workoutDay == tpDay else { return false }
+            guard workout.activityCategory == tpCategory else { return false }
+
+            // Duration within 15% (TP and Strava may differ slightly)
+            guard tpDuration > 0, workout.durationSeconds > 0 else { return true }
+            let durationDiff = abs(workout.durationSeconds - tpDuration) / max(tpDuration, 1)
+            return durationDiff <= 0.15
+        }
+    }
+
+    /// Enrich an existing workout with TP CSV data (TSS, zones, subjective data)
+    private func enrichWorkout(_ workout: WorkoutRecord, with tp: TPWorkoutImport) {
+        // Update TSS from TrainingPeaks (authoritative source)
+        if let tss = tp.tss, tss > 0 {
+            workout.tss = tss
+            workout.tssType = .trainingPeaks
+        }
+
+        if let ifValue = tp.intensityFactor, ifValue > 0 {
+            workout.intensityFactor = ifValue
+        }
+
+        // Update power data if available
+        if let np = tp.powerNormalized { workout.normalizedPower = np }
+        if let avgPower = tp.powerAverage { workout.averagePower = avgPower }
+        if let maxPower = tp.powerMax { workout.maxPower = maxPower }
+
+        // Update HR zone distribution
+        if tp.totalHRZoneMinutes > 0 {
+            var hrDistribution: [String: Double] = [:]
+            for (index, minutes) in tp.hrZones.enumerated() {
+                if minutes > 0 {
+                    hrDistribution["zone\(index + 1)"] = minutes
+                }
+            }
+            workout.heartRateZoneDistribution = hrDistribution
+        }
+
+        // Update power zone distribution
+        if tp.totalPowerZoneMinutes > 0 {
+            var powerDistribution: [String: Double] = [:]
+            for (index, minutes) in tp.powerZones.enumerated() {
+                if minutes > 0 {
+                    powerDistribution["zone\(index + 1)"] = minutes
+                }
+            }
+            workout.powerZoneDistribution = powerDistribution
+        }
+
+        // Update subjective data
+        if let rpe = tp.rpe { workout.rpe = rpe }
+        if let feeling = tp.feeling { workout.feeling = feeling }
+        if let comments = tp.athleteComments, !comments.isEmpty {
+            workout.notes = comments
+        }
+        if let coachComments = tp.coachComments, !coachComments.isEmpty {
+            workout.coachComments = coachComments
+        }
+
+        // Mark as enriched with TP data but keep pending for verification
+        workout.updatedAt = Date()
+        print("[TPCSVImport] Enriched '\(workout.title ?? "Untitled")' with TP TSS: \(tp.tss ?? 0)")
     }
 
     // MARK: - Preview

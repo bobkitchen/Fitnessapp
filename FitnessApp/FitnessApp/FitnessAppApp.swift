@@ -138,10 +138,6 @@ struct MainTabView: View {
     @State private var calibrationResult: CalibrationRecord?
     @State private var showingCalibrationConfirmation = false
 
-    // Workout import state (from Share Extension)
-    @State private var showingTPImportView = false
-    @State private var sharedWorkoutURL: String?
-
     var body: some View {
         ZStack {
             TabView(selection: $selectedTab) {
@@ -190,23 +186,11 @@ struct MainTabView: View {
             if url.scheme == "fitnesscoach" {
                 switch url.host {
                 case "calibrate":
-                    // Legacy screenshot calibration flow
                     checkForSharedScreenshot()
-                case "import-workout":
-                    // New workout import flow (from Share Extension)
-                    checkForSharedWorkout()
                 default:
-                    // Fallback - try both
                     checkForSharedScreenshot()
-                    checkForSharedWorkout()
                 }
             }
-        }
-        .sheet(isPresented: $showingTPImportView) {
-            TPWorkoutImportView(prefilledURL: sharedWorkoutURL)
-                .onDisappear {
-                    clearSharedWorkout()
-                }
         }
         .sheet(item: $pendingScreenshotURL) { url in
             CalibrationReviewView(
@@ -252,71 +236,6 @@ struct MainTabView: View {
             let ocrService = ScreenshotOCRService()
             await ocrService.clearSharedScreenshot()
         }
-    }
-
-    /// Check for shared workout data from Share Extension
-    private func checkForSharedWorkout() {
-        guard let userDefaults = UserDefaults(suiteName: AppConstants.appGroupIdentifier) else {
-            return
-        }
-
-        // Check if there's shared workout data
-        guard let workoutData = userDefaults.dictionary(forKey: "sharedWorkout"),
-              let timestamp = workoutData["timestamp"] as? Double else {
-            return
-        }
-
-        // Only process if shared recently (within last 5 minutes)
-        let sharedDate = Date(timeIntervalSince1970: timestamp)
-        guard Date().timeIntervalSince(sharedDate) < 300 else {
-            // Data is stale, clear it
-            clearSharedWorkout()
-            return
-        }
-
-        // Extract URL or text
-        if let urlString = workoutData["url"] as? String {
-            sharedWorkoutURL = urlString
-        } else if let text = workoutData["text"] as? String {
-            // Try to extract URL from text
-            sharedWorkoutURL = extractURLFromText(text)
-        }
-
-        if sharedWorkoutURL != nil {
-            // Show the TP import view
-            showingTPImportView = true
-        }
-    }
-
-    /// Clear shared workout data from App Group
-    private func clearSharedWorkout() {
-        sharedWorkoutURL = nil
-        guard let userDefaults = UserDefaults(suiteName: AppConstants.appGroupIdentifier) else {
-            return
-        }
-        userDefaults.removeObject(forKey: "sharedWorkout")
-        userDefaults.removeObject(forKey: "sharedWorkoutDate")
-    }
-
-    /// Extract a URL from shared text
-    private func extractURLFromText(_ text: String) -> String? {
-        // Match TrainingPeaks URLs
-        let patterns = [
-            "https?://[\\w.]*trainingpeaks\\.com/[\\w/?=&-]+",
-            "https?://tpks\\.ws/[\\w/?=&-]+"
-        ]
-
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                let range = NSRange(text.startIndex..., in: text)
-                if let match = regex.firstMatch(in: text, options: [], range: range) {
-                    if let matchRange = Range(match.range, in: text) {
-                        return String(text[matchRange])
-                    }
-                }
-            }
-        }
-        return nil
     }
 
     private func seedKnowledgeBaseIfNeeded() async {

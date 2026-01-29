@@ -28,16 +28,14 @@ struct StravaSettingsSection: View {
     var body: some View {
         Section {
             if stravaService.isAuthenticated {
-                // Connected state
                 connectedView
             } else {
-                // Not connected state
                 connectButton
             }
         } header: {
             Label("Strava", systemImage: "figure.run.circle")
         } footer: {
-            Text("Connect Strava to sync workouts with routes, titles, and detailed metrics.")
+            Text("Strava is your primary workout source. Activities sync automatically when you open the app.")
         }
         .onAppear {
             syncService = StravaSyncService(stravaService: stravaService, modelContext: modelContext)
@@ -108,8 +106,19 @@ struct StravaSettingsSection: View {
         }
         .disabled(syncService?.isSyncing == true)
 
-        // Last sync info
-        if let lastSync = stravaService.lastSyncDate {
+        // Auto-sync info
+        HStack {
+            Label("Auto-Sync", systemImage: "arrow.clockwise")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("Every hour on app open")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+
+        // Last sync info (from persisted date)
+        if let lastSync = StravaSyncService.lastSyncDate {
             HStack {
                 Text("Last synced")
                     .foregroundStyle(.secondary)
@@ -184,8 +193,13 @@ struct StravaSettingsSection: View {
         guard let syncService else { return }
 
         do {
-            // Sync last 365 days to get full workout history
-            _ = try await syncService.syncRecentActivities(days: 365)
+            if StravaSyncService.lastSyncDate == nil {
+                // First sync: fetch full 12-month history
+                _ = try await syncService.syncAllActivities()
+            } else {
+                // Incremental sync
+                _ = try await syncService.syncRecentActivities()
+            }
         } catch {
             syncError = error.localizedDescription
         }

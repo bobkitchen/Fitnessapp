@@ -2,8 +2,8 @@
 //  StravaSyncService.swift
 //  FitnessApp
 //
-//  Syncs workouts from Strava, enriches with route data and titles,
-//  and matches with existing HealthKit workouts.
+//  Syncs workouts from Strava as the primary workout source.
+//  Creates new WorkoutRecords from Strava activities and auto-calculates TSS.
 //
 
 import Foundation
@@ -25,16 +25,51 @@ final class StravaSyncService {
     var lastSyncResult: StravaSyncResult?
     var syncError: String?
 
+    /// Auto-sync interval: 1 hour
+    private static let autoSyncInterval: TimeInterval = 3600
+
     init(stravaService: StravaService, modelContext: ModelContext) {
         self.stravaService = stravaService
         self.modelContext = modelContext
     }
 
+    // MARK: - Auto-Sync
+
+    /// Whether enough time has passed since the last sync to auto-sync
+    var shouldAutoSync: Bool {
+        guard stravaService.isAuthenticated else { return false }
+        guard let lastSync = Self.lastSyncDate else { return true }
+        return Date().timeIntervalSince(lastSync) > Self.autoSyncInterval
+    }
+
+    /// Persisted last sync date
+    static var lastSyncDate: Date? {
+        get { UserDefaults.standard.object(forKey: UserDefaultsKey.lastStravaSyncDate) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.lastStravaSyncDate.rawValue) }
+    }
+
+    /// Auto-sync: fetches activities since last sync (or 12 months for initial)
+    func autoSync() async {
+        guard shouldAutoSync else { return }
+
+        do {
+            if Self.lastSyncDate == nil {
+                // Initial sync: fetch 12 months of history
+                _ = try await syncAllActivities()
+            } else {
+                // Incremental sync: fetch since last sync
+                _ = try await syncRecentActivities()
+            }
+        } catch {
+            print("[StravaSyncService] Auto-sync failed: \(error.localizedDescription)")
+            syncError = error.localizedDescription
+        }
+    }
+
     // MARK: - Sync Operations
 
-    /// Sync recent activities from Strava
-    /// - Parameter days: Number of days to look back (default 7)
-    func syncRecentActivities(days: Int = 7) async throws -> StravaSyncResult {
+    /// Initial full sync: fetches all activities with pagination (12-month cap)
+    func syncAllActivities() async throws -> StravaSyncResult {
         guard stravaService.isAuthenticated else {
             throw StravaError.notAuthenticated
         }
@@ -45,34 +80,49 @@ final class StravaSyncService {
 
         defer { isSyncing = false }
 
-        let afterDate = Calendar.current.date(byAdding: .day, value: -days, to: Date())
-
-        // Fetch activities from Strava
-        // Fetch up to 200 activities (Strava max per page) for comprehensive sync
-        let activities = try await stravaService.fetchActivities(after: afterDate, perPage: 200)
+        let activities = try await stravaService.fetchAllActivities()
         syncProgress = 0.3
 
-        // Fetch existing workouts for matching
-        let existingWorkouts = try fetchExistingWorkouts(from: afterDate ?? Date())
-        syncProgress = 0.4
+        return try await processActivities(activities)
+    }
+
+    /// Incremental sync: fetches activities since last sync date
+    func syncRecentActivities() async throws -> StravaSyncResult {
+        guard stravaService.isAuthenticated else {
+            throw StravaError.notAuthenticated
+        }
+
+        isSyncing = true
+        syncProgress = 0
+        syncError = nil
+
+        defer { isSyncing = false }
+
+        let afterDate = Self.lastSyncDate ?? Calendar.current.date(byAdding: .month, value: -12, to: Date())!
+        let activities = try await stravaService.fetchActivities(after: afterDate)
+        syncProgress = 0.3
+
+        return try await processActivities(activities)
+    }
+
+    /// Process fetched activities: create-first logic
+    private func processActivities(_ activities: [StravaActivity]) async throws -> StravaSyncResult {
+        let profile = try fetchAthleteProfile()
 
         var newCount = 0
-        var enrichedCount = 0
         var skippedCount = 0
         var errors: [String] = []
 
-        let totalActivities = activities.count
+        let totalActivities = max(activities.count, 1)
 
         for (index, activity) in activities.enumerated() {
-            syncProgress = 0.4 + (0.6 * Double(index) / Double(totalActivities))
+            syncProgress = 0.3 + (0.7 * Double(index) / Double(totalActivities))
 
             do {
-                let result = try await processActivity(activity, existingWorkouts: existingWorkouts)
+                let result = try processActivity(activity, profile: profile)
                 switch result {
                 case .created:
                     newCount += 1
-                case .enriched:
-                    enrichedCount += 1
                 case .skipped:
                     skippedCount += 1
                 }
@@ -84,9 +134,12 @@ final class StravaSyncService {
         try modelContext.save()
         syncProgress = 1.0
 
+        // Update last sync date
+        Self.lastSyncDate = Date()
+
         let result = StravaSyncResult(
             newActivities: newCount,
-            enrichedActivities: enrichedCount,
+            enrichedActivities: 0,
             skippedActivities: skippedCount,
             totalProcessed: activities.count,
             errors: errors
@@ -98,178 +151,33 @@ final class StravaSyncService {
         return result
     }
 
-    /// Process a single Strava activity
+    /// Process a single Strava activity: create-first logic
+    /// - If stravaActivityId already exists -> skip
+    /// - Otherwise -> create new WorkoutRecord with auto-calculated TSS
     private func processActivity(
         _ activity: StravaActivity,
-        existingWorkouts: [WorkoutRecord]
-    ) async throws -> SyncResultType {
-        // Try to find a matching workout by time/duration
-        if let match = findMatchingWorkout(for: activity, in: existingWorkouts) {
-            // Enrich existing workout with Strava data
-            try await enrichWorkout(match, with: activity)
-            return .enriched
+        profile: AthleteProfile?
+    ) throws -> SyncResultType {
+        // Check if this Strava activity already exists
+        let activityId = activity.id
+        let predicate = #Predicate<WorkoutRecord> { workout in
+            workout.stravaActivityId == activityId
         }
+        let descriptor = FetchDescriptor<WorkoutRecord>(predicate: predicate)
+        let existing = try modelContext.fetch(descriptor)
 
-        // Check if we already have this Strava activity
-        if existingWorkouts.contains(where: { $0.stravaActivityId == activity.id }) {
+        if !existing.isEmpty {
             return .skipped
         }
 
         // Create new workout from Strava
-        let workout = try await createWorkout(from: activity)
+        let workout = createWorkout(from: activity, profile: profile)
         modelContext.insert(workout)
         return .created
     }
 
-    /// Find a matching workout for a Strava activity using Distance-First Matching
-    /// Priority: 1) Same day, 2) Distance within 5% (or 10% with same category), 3) Duration within 2% (cross-category)
-    /// Note: Category matching is relaxed because sources categorize activities differently
-    private func findMatchingWorkout(
-        for activity: StravaActivity,
-        in workouts: [WorkoutRecord]
-    ) -> WorkoutRecord? {
-        let stravaCalendarDay = Calendar.current.startOfDay(for: activity.startDate)
-        let stravaDistance = activity.distanceMeters
-        let stravaDuration = activity.durationSeconds
-        let isIndoor = activity.trainer ?? false
-
-        // Step 1: Filter to candidates on same day, not already linked
-        let sameDayCandidates = workouts.filter { workout in
-            guard workout.stravaActivityId == nil else { return false }
-            let workoutCalendarDay = Calendar.current.startOfDay(for: workout.startDate)
-            return workoutCalendarDay == stravaCalendarDay
-        }
-
-        guard !sameDayCandidates.isEmpty else { return nil }
-
-        // Step 2: Try distance-first matching (for activities with distance)
-        if stravaDistance > 0 {
-            let distanceMatches = sameDayCandidates.compactMap { workout -> (workout: WorkoutRecord, distanceDiff: Double, durationDiff: Double, sameCategory: Bool)? in
-                guard let workoutDistance = workout.distanceMeters, workoutDistance > 0 else { return nil }
-
-                let distanceDiff = abs(workoutDistance - stravaDistance) / stravaDistance
-                let durationDiff = stravaDuration > 0 ? abs(workout.durationSeconds - stravaDuration) / stravaDuration : 0
-                let sameCategory = workout.activityCategory == activity.activityCategory
-
-                // Distance match thresholds - allow cross-category for tight matches
-                let distanceThreshold = sameCategory ? 0.10 : 0.05
-                guard distanceDiff <= distanceThreshold && durationDiff <= 0.25 else { return nil }
-
-                return (workout, distanceDiff, durationDiff, sameCategory)
-            }
-
-            if let bestMatch = distanceMatches.min(by: {
-                if $0.sameCategory != $1.sameCategory { return $0.sameCategory }
-                return $0.distanceDiff < $1.distanceDiff
-            }) {
-                print("[StravaSyncService] Distance match: \(bestMatch.workout.title ?? "Untitled") " +
-                      "(dist diff: \(Int(bestMatch.distanceDiff * 100))%, dur diff: \(Int(bestMatch.durationDiff * 100))%)")
-                return bestMatch.workout
-            }
-        }
-
-        // Step 3: Duration-only matching with same category (moderate threshold)
-        let durationMatches = sameDayCandidates.compactMap { workout -> (workout: WorkoutRecord, durationDiff: Double, sameCategory: Bool)? in
-            guard workout.activityCategory == activity.activityCategory else { return nil }
-            guard stravaDuration > 0 else { return nil }
-
-            let durationDiff = abs(workout.durationSeconds - stravaDuration) / stravaDuration
-            guard durationDiff <= 0.10 else { return nil }
-
-            return (workout, durationDiff, true)
-        }
-
-        if let bestMatch = durationMatches.min(by: { $0.durationDiff < $1.durationDiff }) {
-            print("[StravaSyncService] Duration match (same category): \(bestMatch.workout.title ?? "Untitled") (dur diff: \(Int(bestMatch.durationDiff * 100))%)")
-            return bestMatch.workout
-        }
-
-        // Step 4: ULTRA-TIGHT duration match - cross-category allowed
-        // When durations match within 2%, it's almost certainly the same workout
-        // regardless of how each source categorized it (e.g., Badminton vs Other)
-        let ultraTightMatches = sameDayCandidates.compactMap { workout -> (workout: WorkoutRecord, durationDiff: Double)? in
-            guard stravaDuration > 0 else { return nil }
-
-            let durationDiff = abs(workout.durationSeconds - stravaDuration) / stravaDuration
-            // 2% = ~1-2 minutes for a 1-hour workout
-            guard durationDiff <= 0.02 else { return nil }
-
-            return (workout, durationDiff)
-        }
-
-        if let bestMatch = ultraTightMatches.min(by: { $0.durationDiff < $1.durationDiff }) {
-            print("[StravaSyncService] Ultra-tight duration match (cross-category): \(bestMatch.workout.title ?? "Untitled") (dur diff: \(Int(bestMatch.durationDiff * 100))%)")
-            return bestMatch.workout
-        }
-
-        return nil
-    }
-
-    /// Enrich an existing workout with Strava data (route, title, etc.)
-    /// Always overwrites: stravaActivityId, title, startDate/endDate, routeData
-    /// Preserves: tss, tssType, source (TrainingPeaks data)
-    /// Conditionally updates: metrics only if nil
-    private func enrichWorkout(_ workout: WorkoutRecord, with activity: StravaActivity) async throws {
-        // ALWAYS OVERWRITE: Link to Strava
-        workout.stravaActivityId = activity.id
-
-        // ALWAYS OVERWRITE: Title from Strava (has actual workout names)
-        if let stravaTitle = activity.name, !stravaTitle.isEmpty {
-            workout.title = stravaTitle
-        }
-
-        // ALWAYS OVERWRITE: Time from Strava (TP only has date, not time)
-        workout.startDate = activity.startDate
-        workout.endDate = activity.startDate.addingTimeInterval(activity.durationSeconds)
-
-        // ALWAYS OVERWRITE: Route from Strava
-        if let polyline = activity.map?.summaryPolyline {
-            let coordinates = PolylineDecoder.decode(polyline)
-            if !coordinates.isEmpty {
-                workout.routeData = WorkoutRecord.encodeRoute(coordinates)
-                workout.hasRoute = true
-            }
-        }
-
-        // PRESERVE: tss, tssType, source - these come from TrainingPeaks
-
-        // CONDITIONALLY UPDATE: Only fill in missing metrics
-        if workout.averageHeartRate == nil, let avgHR = activity.averageHeartrate {
-            workout.averageHeartRate = Int(avgHR)
-        }
-        if workout.maxHeartRate == nil, let maxHR = activity.maxHeartrate {
-            workout.maxHeartRate = Int(maxHR)
-        }
-        if workout.averagePower == nil, let avgWatts = activity.averageWatts {
-            workout.averagePower = Int(avgWatts)
-        }
-        if workout.maxPower == nil, let maxWatts = activity.maxWatts {
-            workout.maxPower = maxWatts
-        }
-        if workout.normalizedPower == nil, let np = activity.weightedAverageWatts {
-            workout.normalizedPower = np
-        }
-        if workout.averageCadence == nil, let cadence = activity.averageCadence {
-            workout.averageCadence = Int(cadence)
-        }
-        if workout.totalAscent == nil, let elevation = activity.totalElevationGain {
-            workout.totalAscent = elevation
-        }
-        if workout.activeCalories == nil, let kj = activity.kilojoules {
-            workout.activeCalories = kj
-        }
-        if workout.averagePaceSecondsPerKm == nil && activity.activityCategory == .run && activity.distanceMeters > 0 {
-            let paceSecondsPerKm = activity.durationSeconds / (activity.distanceMeters / 1000)
-            workout.averagePaceSecondsPerKm = paceSecondsPerKm
-        }
-
-        workout.updatedAt = Date()
-
-        print("[StravaSyncService] Enriched '\(workout.title ?? "Untitled")' with Strava data (route: \(workout.hasRoute), time: \(activity.startDate))")
-    }
-
-    /// Create a new WorkoutRecord from a Strava activity
-    private func createWorkout(from activity: StravaActivity) async throws -> WorkoutRecord {
+    /// Create a new WorkoutRecord from a Strava activity with auto-calculated TSS
+    private func createWorkout(from activity: StravaActivity, profile: AthleteProfile?) -> WorkoutRecord {
         let endDate = activity.startDate.addingTimeInterval(activity.durationSeconds)
 
         let workout = WorkoutRecord(
@@ -280,7 +188,7 @@ final class StravaSyncService {
             endDate: endDate,
             durationSeconds: activity.durationSeconds,
             distanceMeters: activity.distanceMeters,
-            tss: 0,  // Will be calculated
+            tss: 0,
             tssType: .estimated,
             indoorWorkout: activity.trainer ?? false,
             hasRoute: false
@@ -322,7 +230,7 @@ final class StravaSyncService {
             workout.totalAscent = elevation
         }
         if let kj = activity.kilojoules {
-            workout.activeCalories = kj  // Approximate: kJ ≈ kcal for cycling
+            workout.activeCalories = kj
         }
 
         // Calculate pace for runs
@@ -331,30 +239,110 @@ final class StravaSyncService {
             workout.averagePaceSecondsPerKm = paceSecondsPerKm
         }
 
-        // Set TSS verification status to pending
+        // Auto-calculate TSS using best available data
+        let tssResult = calculateTSS(for: activity, profile: profile)
+        workout.tss = tssResult.tss
+        workout.tssType = tssResult.type
+        workout.intensityFactor = tssResult.intensityFactor
+        workout.calculatedTSS = tssResult.tss
+
+        // All new workouts start as pending verification
         workout.tssVerificationStatus = .pending
 
         return workout
     }
 
+    /// Calculate TSS from Strava activity data using TSSCalculator
+    private func calculateTSS(for activity: StravaActivity, profile: AthleteProfile?) -> TSSResult {
+        let duration = activity.durationSeconds
+        guard duration > TSSConstants.minimumDurationForTSS else {
+            return TSSResult(tss: 0, type: .estimated, intensityFactor: 0)
+        }
+
+        // Cycling with power
+        if activity.activityCategory == .bike,
+           let np = activity.weightedAverageWatts,
+           let ftp = profile?.ftpWatts, ftp > 0 {
+            return TSSCalculator.calculatePowerTSS(
+                normalizedPower: np,
+                durationSeconds: duration,
+                ftp: ftp
+            )
+        }
+
+        // Running with power
+        if activity.activityCategory == .run,
+           let np = activity.weightedAverageWatts,
+           let runFTP = profile?.runningFTPWatts, runFTP > 0 {
+            return TSSCalculator.calculateRunningPowerTSS(
+                normalizedPower: np,
+                durationSeconds: duration,
+                runningFTP: runFTP
+            )
+        }
+
+        // Running with pace
+        if activity.activityCategory == .run,
+           activity.distanceMeters > 0,
+           let thresholdPace = profile?.thresholdPaceSecondsPerKm {
+            let avgPace = duration / (activity.distanceMeters / 1000)
+            return TSSCalculator.calculateRunningTSS(
+                averagePace: avgPace,
+                durationSeconds: duration,
+                thresholdPace: thresholdPace,
+                totalAscent: activity.totalElevationGain,
+                totalDescent: nil,
+                distance: activity.distanceMeters
+            )
+        }
+
+        // Swimming with pace
+        if activity.activityCategory == .swim,
+           activity.distanceMeters > 0,
+           let swimThreshold = profile?.swimThresholdPacePer100m {
+            let avgPace = duration / (activity.distanceMeters / 100)
+            return TSSCalculator.calculateSwimTSS(
+                averagePacePer100m: avgPace,
+                durationSeconds: duration,
+                thresholdPacePer100m: swimThreshold
+            )
+        }
+
+        // Heart rate based
+        if let avgHR = activity.averageHeartrate,
+           let thresholdHR = profile?.thresholdHeartRate, thresholdHR > 0 {
+            let hrIF = avgHR / Double(thresholdHR)
+            let tss = (duration / 3600) * pow(hrIF, 2) * 100
+            return TSSResult(tss: tss, type: .heartRate, intensityFactor: hrIF)
+        }
+
+        // Estimate based on activity type and duration
+        let estimatedIntensity: Double
+        switch activity.activityCategory {
+        case .run: estimatedIntensity = 0.7
+        case .bike: estimatedIntensity = 0.65
+        case .swim: estimatedIntensity = 0.7
+        case .strength: estimatedIntensity = 0.6
+        case .other: estimatedIntensity = 0.5
+        }
+
+        return TSSCalculator.estimateTSS(
+            durationSeconds: duration,
+            perceivedIntensity: estimatedIntensity
+        )
+    }
+
     // MARK: - Data Fetching
 
-    private func fetchExistingWorkouts(from startDate: Date) throws -> [WorkoutRecord] {
-        let predicate = #Predicate<WorkoutRecord> { workout in
-            workout.startDate >= startDate
-        }
-        let descriptor = FetchDescriptor<WorkoutRecord>(
-            predicate: predicate,
-            sortBy: [SortDescriptor(\.startDate, order: .reverse)]
-        )
-        return try modelContext.fetch(descriptor)
+    private func fetchAthleteProfile() throws -> AthleteProfile? {
+        let descriptor = FetchDescriptor<AthleteProfile>()
+        return try modelContext.fetch(descriptor).first
     }
 
     // MARK: - Result Types
 
     private enum SyncResultType {
         case created
-        case enriched
         case skipped
     }
 }

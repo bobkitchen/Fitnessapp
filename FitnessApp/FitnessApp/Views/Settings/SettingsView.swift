@@ -121,26 +121,12 @@ struct SettingsView: View {
     private var dataSection: some View {
         Section("Data Sources") {
             NavigationLink {
-                HealthKitSettingsView()
-            } label: {
-                HStack {
-                    Label("Apple Health", systemImage: "heart.fill")
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.subheadline)
-                }
-            }
-
-            NavigationLink {
                 StravaSettingsView()
             } label: {
                 HStack {
                     Label("Strava", systemImage: "figure.outdoor.cycle")
                         .foregroundStyle(.primary)
                     Spacer()
-                    // Show connection status
                     if KeychainService.hasStravaCredentials {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -152,21 +138,32 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            NavigationLink {
+                HealthKitSettingsView()
+            } label: {
+                HStack {
+                    Label("Apple Health", systemImage: "heart.fill")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.subheadline)
+                }
+            }
         }
 
-        // TSS Calibration Section - separate from data sources
+        // TSS Calibration Section
         Section("TSS Calibration") {
-            // TSS Accuracy Card
             TSSAccuracyCard()
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
 
-            // TrainingPeaks Import
             Button {
                 showingTPImportSheet = true
             } label: {
                 HStack {
-                    Label("Import TrainingPeaks Workout", systemImage: "link.badge.plus")
+                    Label("Import TrainingPeaks CSV", systemImage: "doc.text")
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption)
