@@ -56,6 +56,10 @@ struct OnboardingView: View {
                 onContinue: { advanceToTPImport() }
             )
             .tag(1)
+            .task {
+                // Validate that stored tokens actually work (not just exist)
+                await stravaService.validateAuthentication()
+            }
 
             // Page 3: Optional TrainingPeaks CSV Import (for TSS enrichment)
             TrainingPeaksImportPage(
@@ -224,6 +228,9 @@ struct OnboardingView: View {
                 }
 
                 // Step 1: Initial Strava sync (12 months of workout history)
+                // Re-validate token before attempting sync
+                await stravaService.validateAuthentication()
+
                 if stravaService.isAuthenticated {
                     let stravaSyncService = StravaSyncService(
                         stravaService: stravaService,
@@ -233,7 +240,9 @@ struct OnboardingView: View {
                         let result = try await stravaSyncService.syncAllActivities()
                         print("[Onboarding] Strava initial sync: \(result.summary)")
                     } catch {
-                        print("[Onboarding] Strava sync error (continuing): \(error.localizedDescription)")
+                        let errorMsg = "Strava sync failed: \(error.localizedDescription). You can reconnect in Settings > Strava."
+                        print("[Onboarding] \(errorMsg)")
+                        syncError = errorMsg
                     }
                 }
 

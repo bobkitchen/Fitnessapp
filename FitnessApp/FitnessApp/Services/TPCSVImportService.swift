@@ -204,16 +204,16 @@ final class TPCSVImportService {
                 rowDict[header] = value
             }
 
-            // Try to parse with primary formatter first, then alternatives
-            if let workout = TPWorkoutImport.from(csvRow: rowDict, dateFormatter: dateFormatter) {
-                workouts.append(workout)
-            } else {
-                // Try alternate date formats
-                for altFormatter in alternateFormatters {
-                    if let workout = TPWorkoutImport.from(csvRow: rowDict, dateFormatter: altFormatter) {
-                        workouts.append(workout)
-                        break
-                    }
+            // Try all date formatters: primary first, then alternatives
+            // Note: DateFormatter("yyyy-MM-dd") can leniently parse "1/2/25" as year 1,
+            // so we must try all formatters, not stop at the first non-nil result.
+            let allFormatters = [dateFormatter] + alternateFormatters
+            var parsed = false
+            for formatter in allFormatters {
+                if let workout = TPWorkoutImport.from(csvRow: rowDict, dateFormatter: formatter) {
+                    workouts.append(workout)
+                    parsed = true
+                    break
                 }
             }
         }

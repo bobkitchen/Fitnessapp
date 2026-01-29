@@ -54,15 +54,40 @@ final class StravaService: NSObject {
 
     // MARK: - Authentication
 
-    /// Check if we have valid tokens stored
+    /// Quick check if tokens exist in keychain (synchronous, used at init)
     func checkAuthentication() {
         if let _ = StravaTokenManager.getAccessToken() {
             isAuthenticated = true
-            // Load cached athlete profile
             athleteProfile = StravaTokenManager.getAthleteProfile()
         } else {
             isAuthenticated = false
         }
+    }
+
+    /// Validate that stored tokens actually work by refreshing if expired.
+    /// Call this before relying on `isAuthenticated` for user-facing UI.
+    func validateAuthentication() async {
+        guard StravaTokenManager.getAccessToken() != nil else {
+            isAuthenticated = false
+            return
+        }
+
+        // If token is expired, attempt refresh
+        if let expiresAt = StravaTokenManager.getTokenExpiry(), expiresAt < Date() {
+            do {
+                try await refreshTokenIfNeeded()
+                isAuthenticated = true
+                print("[Strava] Token refresh validated successfully")
+            } catch {
+                // Refresh failed - token is invalid
+                print("[Strava] Token validation failed: \(error.localizedDescription)")
+                logout()
+            }
+        } else {
+            isAuthenticated = true
+        }
+
+        athleteProfile = StravaTokenManager.getAthleteProfile()
     }
 
     /// Start OAuth flow

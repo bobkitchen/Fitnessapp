@@ -50,6 +50,8 @@ final class StravaSyncService {
 
     /// Auto-sync: fetches activities since last sync (or 12 months for initial)
     func autoSync() async {
+        // Validate token is actually usable before checking shouldAutoSync
+        await stravaService.validateAuthentication()
         guard shouldAutoSync else { return }
 
         do {
