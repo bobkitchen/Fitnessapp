@@ -8,6 +8,16 @@
 import SwiftUI
 import SwiftData
 
+/// Full-page Strava settings view for NavigationLink destination
+struct StravaSettingsView: View {
+    var body: some View {
+        List {
+            StravaSettingsSection()
+        }
+        .navigationTitle("Strava")
+    }
+}
+
 struct StravaSettingsSection: View {
     @Environment(\.modelContext) private var modelContext
     @State private var stravaService = StravaService()
@@ -174,7 +184,8 @@ struct StravaSettingsSection: View {
         guard let syncService else { return }
 
         do {
-            _ = try await syncService.syncRecentActivities(days: 14)
+            // Sync last 365 days to get full workout history
+            _ = try await syncService.syncRecentActivities(days: 365)
         } catch {
             syncError = error.localizedDescription
         }

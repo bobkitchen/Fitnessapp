@@ -48,7 +48,8 @@ final class StravaSyncService {
         let afterDate = Calendar.current.date(byAdding: .day, value: -days, to: Date())
 
         // Fetch activities from Strava
-        let activities = try await stravaService.fetchActivities(after: afterDate, perPage: 50)
+        // Fetch up to 200 activities (Strava max per page) for comprehensive sync
+        let activities = try await stravaService.fetchActivities(after: afterDate, perPage: 200)
         syncProgress = 0.3
 
         // Fetch existing workouts for matching
@@ -76,7 +77,7 @@ final class StravaSyncService {
                     skippedCount += 1
                 }
             } catch {
-                errors.append("Activity '\(activity.name)': \(error.localizedDescription)")
+                errors.append("Activity '\(activity.displayName)': \(error.localizedDescription)")
             }
         }
 
@@ -120,47 +121,109 @@ final class StravaSyncService {
         return .created
     }
 
-    /// Find a matching HealthKit workout for a Strava activity
+    /// Find a matching workout for a Strava activity using Distance-First Matching
+    /// Priority: 1) Same day, 2) Distance within 5% (or 10% with same category), 3) Duration within 2% (cross-category)
+    /// Note: Category matching is relaxed because sources categorize activities differently
     private func findMatchingWorkout(
         for activity: StravaActivity,
         in workouts: [WorkoutRecord]
     ) -> WorkoutRecord? {
-        // Match by start time (within 5 minutes) and similar duration (within 10%)
-        let stravaStart = activity.startDate
+        let stravaCalendarDay = Calendar.current.startOfDay(for: activity.startDate)
+        let stravaDistance = activity.distanceMeters
         let stravaDuration = activity.durationSeconds
+        let isIndoor = activity.trainer ?? false
 
-        return workouts.first { workout in
-            // Skip if already linked to a Strava activity
+        // Step 1: Filter to candidates on same day, not already linked
+        let sameDayCandidates = workouts.filter { workout in
             guard workout.stravaActivityId == nil else { return false }
-
-            // Must be same activity category
-            guard workout.activityCategory == activity.activityCategory else { return false }
-
-            // Time match: within 5 minutes
-            let timeDiff = abs(workout.startDate.timeIntervalSince(stravaStart))
-            guard timeDiff < 300 else { return false }
-
-            // Duration match: within 10%
-            let durationDiff = abs(workout.durationSeconds - stravaDuration)
-            let durationThreshold = stravaDuration * 0.1
-            guard durationDiff < durationThreshold else { return false }
-
-            return true
+            let workoutCalendarDay = Calendar.current.startOfDay(for: workout.startDate)
+            return workoutCalendarDay == stravaCalendarDay
         }
+
+        guard !sameDayCandidates.isEmpty else { return nil }
+
+        // Step 2: Try distance-first matching (for activities with distance)
+        if stravaDistance > 0 {
+            let distanceMatches = sameDayCandidates.compactMap { workout -> (workout: WorkoutRecord, distanceDiff: Double, durationDiff: Double, sameCategory: Bool)? in
+                guard let workoutDistance = workout.distanceMeters, workoutDistance > 0 else { return nil }
+
+                let distanceDiff = abs(workoutDistance - stravaDistance) / stravaDistance
+                let durationDiff = stravaDuration > 0 ? abs(workout.durationSeconds - stravaDuration) / stravaDuration : 0
+                let sameCategory = workout.activityCategory == activity.activityCategory
+
+                // Distance match thresholds - allow cross-category for tight matches
+                let distanceThreshold = sameCategory ? 0.10 : 0.05
+                guard distanceDiff <= distanceThreshold && durationDiff <= 0.25 else { return nil }
+
+                return (workout, distanceDiff, durationDiff, sameCategory)
+            }
+
+            if let bestMatch = distanceMatches.min(by: {
+                if $0.sameCategory != $1.sameCategory { return $0.sameCategory }
+                return $0.distanceDiff < $1.distanceDiff
+            }) {
+                print("[StravaSyncService] Distance match: \(bestMatch.workout.title ?? "Untitled") " +
+                      "(dist diff: \(Int(bestMatch.distanceDiff * 100))%, dur diff: \(Int(bestMatch.durationDiff * 100))%)")
+                return bestMatch.workout
+            }
+        }
+
+        // Step 3: Duration-only matching with same category (moderate threshold)
+        let durationMatches = sameDayCandidates.compactMap { workout -> (workout: WorkoutRecord, durationDiff: Double, sameCategory: Bool)? in
+            guard workout.activityCategory == activity.activityCategory else { return nil }
+            guard stravaDuration > 0 else { return nil }
+
+            let durationDiff = abs(workout.durationSeconds - stravaDuration) / stravaDuration
+            guard durationDiff <= 0.10 else { return nil }
+
+            return (workout, durationDiff, true)
+        }
+
+        if let bestMatch = durationMatches.min(by: { $0.durationDiff < $1.durationDiff }) {
+            print("[StravaSyncService] Duration match (same category): \(bestMatch.workout.title ?? "Untitled") (dur diff: \(Int(bestMatch.durationDiff * 100))%)")
+            return bestMatch.workout
+        }
+
+        // Step 4: ULTRA-TIGHT duration match - cross-category allowed
+        // When durations match within 2%, it's almost certainly the same workout
+        // regardless of how each source categorized it (e.g., Badminton vs Other)
+        let ultraTightMatches = sameDayCandidates.compactMap { workout -> (workout: WorkoutRecord, durationDiff: Double)? in
+            guard stravaDuration > 0 else { return nil }
+
+            let durationDiff = abs(workout.durationSeconds - stravaDuration) / stravaDuration
+            // 2% = ~1-2 minutes for a 1-hour workout
+            guard durationDiff <= 0.02 else { return nil }
+
+            return (workout, durationDiff)
+        }
+
+        if let bestMatch = ultraTightMatches.min(by: { $0.durationDiff < $1.durationDiff }) {
+            print("[StravaSyncService] Ultra-tight duration match (cross-category): \(bestMatch.workout.title ?? "Untitled") (dur diff: \(Int(bestMatch.durationDiff * 100))%)")
+            return bestMatch.workout
+        }
+
+        return nil
     }
 
     /// Enrich an existing workout with Strava data (route, title, etc.)
+    /// Always overwrites: stravaActivityId, title, startDate/endDate, routeData
+    /// Preserves: tss, tssType, source (TrainingPeaks data)
+    /// Conditionally updates: metrics only if nil
     private func enrichWorkout(_ workout: WorkoutRecord, with activity: StravaActivity) async throws {
-        // Link to Strava
+        // ALWAYS OVERWRITE: Link to Strava
         workout.stravaActivityId = activity.id
 
-        // Use Strava title if workout doesn't have one
-        if workout.title == nil || workout.title?.isEmpty == true {
-            workout.title = activity.name
+        // ALWAYS OVERWRITE: Title from Strava (has actual workout names)
+        if let stravaTitle = activity.name, !stravaTitle.isEmpty {
+            workout.title = stravaTitle
         }
 
-        // Add route data if available and workout doesn't have one
-        if !workout.hasRoute, let polyline = activity.map?.summaryPolyline {
+        // ALWAYS OVERWRITE: Time from Strava (TP only has date, not time)
+        workout.startDate = activity.startDate
+        workout.endDate = activity.startDate.addingTimeInterval(activity.durationSeconds)
+
+        // ALWAYS OVERWRITE: Route from Strava
+        if let polyline = activity.map?.summaryPolyline {
             let coordinates = PolylineDecoder.decode(polyline)
             if !coordinates.isEmpty {
                 workout.routeData = WorkoutRecord.encodeRoute(coordinates)
@@ -168,18 +231,41 @@ final class StravaSyncService {
             }
         }
 
-        // Update with additional Strava data
+        // PRESERVE: tss, tssType, source - these come from TrainingPeaks
+
+        // CONDITIONALLY UPDATE: Only fill in missing metrics
+        if workout.averageHeartRate == nil, let avgHR = activity.averageHeartrate {
+            workout.averageHeartRate = Int(avgHR)
+        }
+        if workout.maxHeartRate == nil, let maxHR = activity.maxHeartrate {
+            workout.maxHeartRate = Int(maxHR)
+        }
+        if workout.averagePower == nil, let avgWatts = activity.averageWatts {
+            workout.averagePower = Int(avgWatts)
+        }
+        if workout.maxPower == nil, let maxWatts = activity.maxWatts {
+            workout.maxPower = maxWatts
+        }
+        if workout.normalizedPower == nil, let np = activity.weightedAverageWatts {
+            workout.normalizedPower = np
+        }
+        if workout.averageCadence == nil, let cadence = activity.averageCadence {
+            workout.averageCadence = Int(cadence)
+        }
         if workout.totalAscent == nil, let elevation = activity.totalElevationGain {
             workout.totalAscent = elevation
         }
-
-        if workout.normalizedPower == nil, let np = activity.weightedAverageWatts {
-            workout.normalizedPower = np
+        if workout.activeCalories == nil, let kj = activity.kilojoules {
+            workout.activeCalories = kj
+        }
+        if workout.averagePaceSecondsPerKm == nil && activity.activityCategory == .run && activity.distanceMeters > 0 {
+            let paceSecondsPerKm = activity.durationSeconds / (activity.distanceMeters / 1000)
+            workout.averagePaceSecondsPerKm = paceSecondsPerKm
         }
 
         workout.updatedAt = Date()
 
-        print("[StravaSyncService] Enriched workout '\(workout.title ?? "Untitled")' with Strava data")
+        print("[StravaSyncService] Enriched '\(workout.title ?? "Untitled")' with Strava data (route: \(workout.hasRoute), time: \(activity.startDate))")
     }
 
     /// Create a new WorkoutRecord from a Strava activity
@@ -187,9 +273,9 @@ final class StravaSyncService {
         let endDate = activity.startDate.addingTimeInterval(activity.durationSeconds)
 
         let workout = WorkoutRecord(
-            activityType: activity.type,
+            activityType: activity.activityType,
             activityCategory: activity.activityCategory,
-            title: activity.name,
+            title: activity.displayName,
             startDate: activity.startDate,
             endDate: endDate,
             durationSeconds: activity.durationSeconds,
@@ -240,8 +326,8 @@ final class StravaSyncService {
         }
 
         // Calculate pace for runs
-        if activity.activityCategory == .run && activity.distance > 0 {
-            let paceSecondsPerKm = activity.durationSeconds / (activity.distance / 1000)
+        if activity.activityCategory == .run && activity.distanceMeters > 0 {
+            let paceSecondsPerKm = activity.durationSeconds / (activity.distanceMeters / 1000)
             workout.averagePaceSecondsPerKm = paceSecondsPerKm
         }
 

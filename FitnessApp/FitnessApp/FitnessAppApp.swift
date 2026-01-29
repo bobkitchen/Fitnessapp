@@ -170,6 +170,9 @@ struct MainTabView: View {
             }
         }
         .task {
+            // Initialize secrets in Keychain on first launch
+            AppSecrets.initializeKeychainIfNeeded()
+
             await healthKitService.requestAuthorization()
             await syncProfileFromHealthKitIfNeeded()
             await seedKnowledgeBaseIfNeeded()

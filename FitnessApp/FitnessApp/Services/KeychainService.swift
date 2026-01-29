@@ -6,6 +6,8 @@ nonisolated struct KeychainService: Sendable {
 
     nonisolated enum KeychainKey: String, Sendable {
         case openRouterAPIKey = "com.bobk.FitnessApp.openRouterAPIKey"
+        case stravaClientId = "com.bobk.FitnessApp.stravaClientId"
+        case stravaClientSecret = "com.bobk.FitnessApp.stravaClientSecret"
     }
 
     nonisolated enum KeychainError: Error, Sendable {
@@ -135,5 +137,44 @@ extension KeychainService {
 
     nonisolated static var hasOpenRouterAPIKey: Bool {
         exists(key: .openRouterAPIKey)
+    }
+}
+
+// MARK: - Strava Credentials
+
+extension KeychainService {
+
+    /// Save Strava API credentials to Keychain
+    static func saveStravaCredentials(clientId: String, clientSecret: String) throws {
+        let trimmedId = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedId.isEmpty, !trimmedSecret.isEmpty else {
+            throw KeychainError.invalidData
+        }
+
+        try save(key: .stravaClientId, value: trimmedId)
+        try save(key: .stravaClientSecret, value: trimmedSecret)
+    }
+
+    /// Get Strava Client ID from Keychain
+    nonisolated static func getStravaClientId() -> String? {
+        try? read(key: .stravaClientId)
+    }
+
+    /// Get Strava Client Secret from Keychain
+    nonisolated static func getStravaClientSecret() -> String? {
+        try? read(key: .stravaClientSecret)
+    }
+
+    /// Check if Strava credentials are configured
+    nonisolated static var hasStravaCredentials: Bool {
+        exists(key: .stravaClientId) && exists(key: .stravaClientSecret)
+    }
+
+    /// Delete Strava credentials
+    static func deleteStravaCredentials() throws {
+        try delete(key: .stravaClientId)
+        try delete(key: .stravaClientSecret)
     }
 }

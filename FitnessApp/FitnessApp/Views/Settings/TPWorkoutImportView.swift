@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import HealthKit
+import CoreLocation
 
 /// View for importing workouts from TrainingPeaks (CSV bulk import or URL direct import)
 struct TPWorkoutImportView: View {
@@ -30,6 +32,11 @@ struct TPWorkoutImportView: View {
     @State private var errorMessage: String?
     @State private var importedWorkout: WorkoutRecord?
 
+    // Enrichment state (Strava/HealthKit data to merge with TP data)
+    @State private var stravaService = StravaService()
+    @State private var enrichmentData: WorkoutEnrichmentData?
+    @State private var enrichmentSource: String?  // "Strava", "HealthKit", or nil
+
     // PMC manual entry fields
     @State private var ctlText = ""
     @State private var atlText = ""
@@ -56,6 +63,7 @@ struct TPWorkoutImportView: View {
     enum ImportState: Equatable {
         case idle
         case fetching
+        case enriching  // NEW: Enriching with Strava/HealthKit data
         case preview
         case importing
         case success
@@ -344,6 +352,8 @@ struct TPWorkoutImportView: View {
             switch importState {
             case .idle, .fetching, .error:
                 urlInputCard
+            case .enriching:
+                enrichingCard
             case .preview, .importing:
                 workoutPreviewCard
             case .success:
@@ -432,25 +442,65 @@ struct TPWorkoutImportView: View {
         .animatedAppearance(index: 0)
     }
 
+    // MARK: - Enriching Card
+
+    @ViewBuilder
+    private var enrichingCard: some View {
+        VStack(spacing: Spacing.md) {
+            ProgressView()
+                .controlSize(.regular)
+            Text("Checking Strava & HealthKit for route data...")
+                .font(AppFont.bodyMedium)
+                .foregroundStyle(Color.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(Spacing.xl)
+        .cardBackground(cornerRadius: CornerRadius.large)
+    }
+
     // MARK: - Workout Preview Card
 
     @ViewBuilder
     private var workoutPreviewCard: some View {
         if let tpData = tpWorkoutData {
+            // Use enriched data if available
+            let displayTitle = enrichmentData?.title ?? tpData.title ?? tpData.activityType
+            let displayDate = enrichmentData?.preciseStartDate ?? tpData.startDate
+            let hasEnrichedRoute = enrichmentData?.routeCoordinates != nil
+
             VStack(alignment: .leading, spacing: Spacing.md) {
                 // Activity header
                 HStack(spacing: Spacing.xs) {
                     Image(systemName: tpData.activityCategory.icon)
                         .font(.title3)
                         .foregroundStyle(tpData.activityCategory.themeColor)
-                    Text(tpData.title ?? tpData.activityType)
+                    Text(displayTitle)
                         .font(AppFont.titleMedium)
                         .foregroundStyle(Color.textPrimary)
                 }
 
-                // Date + duration
+                // Enrichment badge (if enriched)
+                if let source = enrichmentSource {
+                    HStack(spacing: Spacing.xs) {
+                        Image(systemName: hasEnrichedRoute ? "map.fill" : "clock.fill")
+                            .font(.caption)
+                        Text(hasEnrichedRoute ? "Route from \(source)" : "Time from \(source)")
+                            .font(AppFont.captionSmall)
+                    }
+                    .foregroundStyle(Color.statusOptimal)
+                    .padding(.horizontal, Spacing.sm)
+                    .padding(.vertical, Spacing.xxs)
+                    .background(Color.statusOptimal.opacity(0.15))
+                    .clipShape(Capsule())
+                }
+
+                // Date + time + duration
                 HStack(spacing: Spacing.xs) {
-                    Text(tpData.startDate, style: .date)
+                    Text(displayDate, style: .date)
+                    if enrichmentData?.preciseStartDate != nil {
+                        Text(displayDate, style: .time)
+                    }
                     Text("\u{00B7}")
                     Text(formatDuration(tpData.duration))
                 }
@@ -668,6 +718,9 @@ struct TPWorkoutImportView: View {
                 return
             }
 
+            // Enrich with Strava/HealthKit data before showing preview
+            await enrichWorkoutData(tpData)
+
             importState = .preview
         } catch {
             errorMessage = error.localizedDescription
@@ -719,13 +772,17 @@ struct TPWorkoutImportView: View {
             intensityFactor = 0
         }
 
+        // Use enrichment data for title and time if available
+        let title = enrichmentData?.title ?? tpData.title
+        let startDate = enrichmentData?.preciseStartDate ?? tpData.startDate
+
         let record = WorkoutRecord(
             healthKitUUID: nil,
             activityType: tpData.activityType,
             activityCategory: tpData.activityCategory,
-            title: tpData.title,
-            startDate: tpData.startDate,
-            endDate: tpData.startDate.addingTimeInterval(tpData.duration),
+            title: title,
+            startDate: startDate,
+            endDate: startDate.addingTimeInterval(tpData.duration),
             durationSeconds: tpData.duration,
             distanceMeters: tpData.distance,
             tss: tpData.tss,
@@ -733,13 +790,29 @@ struct TPWorkoutImportView: View {
             intensityFactor: intensityFactor
         )
         record.source = .trainingPeaks
-        record.averageHeartRate = tpData.averageHR
-        record.averagePower = tpData.averagePower
+
+        // Use enrichment data for metrics, falling back to TP data
+        record.averageHeartRate = enrichmentData?.averageHeartRate ?? tpData.averageHR
+        record.maxHeartRate = enrichmentData?.maxHeartRate
+        record.averagePower = enrichmentData?.averagePower ?? tpData.averagePower
+        record.normalizedPower = enrichmentData?.normalizedPower
+        record.totalAscent = enrichmentData?.totalElevationGain
         record.averagePaceSecondsPerKm = tpData.averagePace
-        if let coords = tpData.routeCoordinates, !coords.isEmpty {
-            record.hasRoute = true
-            record.routeData = WorkoutRecord.encodeRoute(coords)
+
+        // Link to Strava if enriched from Strava
+        if let stravaId = enrichmentData?.stravaActivityId {
+            record.stravaActivityId = stravaId
         }
+
+        // Use route from enrichment (Strava/HealthKit) or TP
+        if let enrichedCoords = enrichmentData?.routeCoordinates, !enrichedCoords.isEmpty {
+            record.hasRoute = true
+            record.routeData = WorkoutRecord.encodeRoute(enrichedCoords)
+        } else if let tpCoords = tpData.routeCoordinates, !tpCoords.isEmpty {
+            record.hasRoute = true
+            record.routeData = WorkoutRecord.encodeRoute(tpCoords)
+        }
+
         return record
     }
 
@@ -775,6 +848,8 @@ struct TPWorkoutImportView: View {
         atlText = ""
         tsbText = ""
         showPMCEntry = false
+        enrichmentData = nil
+        enrichmentSource = nil
     }
 
     // MARK: - Formatting Helpers
@@ -949,6 +1024,175 @@ struct TPWorkoutImportView: View {
         formatter.dateStyle = .medium
         return "\(formatter.string(from: range.lowerBound)) - \(formatter.string(from: range.upperBound))"
     }
+
+    // MARK: - Workout Enrichment
+
+    /// Enrich TP workout data with Strava and HealthKit data before showing preview
+    private func enrichWorkoutData(_ tpData: TPWorkoutData) async {
+        importState = .enriching
+
+        // Try Strava first (has titles, routes, precise times)
+        if stravaService.isAuthenticated {
+            if let stravaEnrichment = await fetchStravaEnrichment(for: tpData) {
+                enrichmentData = stravaEnrichment
+                enrichmentSource = "Strava"
+                print("[TPImport] Enriched with Strava: title=\(stravaEnrichment.title ?? "nil"), hasRoute=\(stravaEnrichment.routeCoordinates != nil)")
+                return
+            }
+        }
+
+        // Fall back to HealthKit for route data
+        if let hkEnrichment = await fetchHealthKitEnrichment(for: tpData) {
+            enrichmentData = hkEnrichment
+            enrichmentSource = "Apple Watch"
+            print("[TPImport] Enriched with HealthKit route")
+            return
+        }
+
+        // No enrichment available
+        enrichmentData = nil
+        enrichmentSource = nil
+        print("[TPImport] No enrichment data available")
+    }
+
+    /// Fetch matching Strava activity for enrichment
+    private func fetchStravaEnrichment(for tpData: TPWorkoutData) async -> WorkoutEnrichmentData? {
+        do {
+            // Fetch more activities to ensure we capture the right one
+            // Look 14 days before the workout date
+            let startDate = Calendar.current.date(byAdding: .day, value: -14, to: tpData.startDate)
+            let activities = try await stravaService.fetchActivities(after: startDate, perPage: 200)
+
+            print("[TPImport] Strava enrichment: fetched \(activities.count) activities")
+            print("[TPImport] Looking for: type=\(tpData.activityType) date=\(tpData.startDate) dur=\(Int(tpData.duration))s dist=\(Int(tpData.distance ?? 0))m")
+
+            // Find matching activity by date, duration, and distance
+            // Allow ±1 day window to handle timezone discrepancies
+            let tpCalendarDay = Calendar.current.startOfDay(for: tpData.startDate)
+            let dayBefore = Calendar.current.date(byAdding: .day, value: -1, to: tpCalendarDay)!
+            let dayAfter = Calendar.current.date(byAdding: .day, value: 1, to: tpCalendarDay)!
+
+            // First pass: try to find exact duration + distance match within ±1 day
+            for activity in activities {
+                let stravaCalendarDay = Calendar.current.startOfDay(for: activity.startDate)
+
+                // Must be within ±1 day of TP date
+                let dateInRange = stravaCalendarDay >= dayBefore && stravaCalendarDay <= dayAfter
+                if dateInRange {
+                    // Log candidate activities within date range for debugging
+                    let durationDiff = abs(activity.durationSeconds - tpData.duration) / max(tpData.duration, 1)
+                    let tpDistance = tpData.distance ?? 0
+                    let distanceDiff = tpDistance > 0 && activity.distanceMeters > 0
+                        ? abs(activity.distanceMeters - tpDistance) / tpDistance
+                        : 0
+                    print("[TPImport] Candidate: '\(activity.displayName)' type=\(activity.activityType) date=\(activity.startDate) dur=\(Int(activity.durationSeconds))s (diff:\(Int(durationDiff * 100))%) dist=\(Int(activity.distanceMeters))m (diff:\(Int(distanceDiff * 100))%)")
+                }
+                guard dateInRange else { continue }
+
+                // Check duration match (within 10% - more lenient)
+                let durationDiff = abs(activity.durationSeconds - tpData.duration) / max(tpData.duration, 1)
+                guard durationDiff <= 0.10 else { continue }
+
+                // Check distance match if available (within 15% - more lenient)
+                if let tpDistance = tpData.distance, tpDistance > 0, activity.distanceMeters > 0 {
+                    let distanceDiff = abs(activity.distanceMeters - tpDistance) / tpDistance
+                    guard distanceDiff <= 0.15 else { continue }
+                }
+
+                print("[TPImport] Strava match found: '\(activity.displayName)' on \(activity.startDate)")
+
+                // Found a match! Extract enrichment data
+                var routeCoords: [(latitude: Double, longitude: Double)]?
+                if let polyline = activity.map?.summaryPolyline, !polyline.isEmpty {
+                    routeCoords = PolylineDecoder.decode(polyline)
+                }
+
+                return WorkoutEnrichmentData(
+                    title: activity.name,
+                    preciseStartDate: activity.startDate,
+                    routeCoordinates: routeCoords,
+                    stravaActivityId: activity.id,
+                    averageHeartRate: activity.averageHeartrate.map { Int($0) },
+                    maxHeartRate: activity.maxHeartrate.map { Int($0) },
+                    averagePower: activity.averageWatts.map { Int($0) },
+                    normalizedPower: activity.weightedAverageWatts,
+                    totalElevationGain: activity.totalElevationGain
+                )
+            }
+
+            // No match found - log what we were looking for
+            print("[TPImport] No Strava match found. Looking for: duration=\(Int(tpData.duration))s, distance=\(Int(tpData.distance ?? 0))m, date=\(tpData.startDate)")
+            if !activities.isEmpty {
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "yyyy-MM-dd"
+                let activityDates = Set(activities.map { dateFormatter.string(from: $0.startDate) })
+                print("[TPImport] Available Strava dates: \(activityDates.sorted().suffix(10).joined(separator: ", "))")
+            }
+
+            return nil
+        } catch {
+            print("[TPImport] Strava enrichment error: \(error)")
+            return nil
+        }
+    }
+
+    /// Fetch matching HealthKit workout for route enrichment
+    private func fetchHealthKitEnrichment(for tpData: TPWorkoutData) async -> WorkoutEnrichmentData? {
+        do {
+            // Fetch HealthKit workouts from ±1 day to handle timezone issues
+            let dayStart = Calendar.current.startOfDay(for: tpData.startDate)
+            let searchStart = Calendar.current.date(byAdding: .day, value: -1, to: dayStart)!
+            let dayEnd = Calendar.current.date(byAdding: .day, value: 2, to: dayStart)!
+
+            let hkWorkouts = try await healthKitService.fetchWorkouts(from: searchStart, to: dayEnd)
+
+            // Find matching workout by duration
+            for hkWorkout in hkWorkouts {
+                let durationDiff = abs(hkWorkout.duration - tpData.duration) / max(tpData.duration, 1)
+                guard durationDiff <= 0.05 else { continue }
+
+                // Try to get route
+                let locations = try await healthKitService.fetchWorkoutRoute(for: hkWorkout)
+                guard !locations.isEmpty else { continue }
+
+                // Downsample for storage
+                let downsampled = HealthKitService.downsampleLocations(locations, maxPoints: 300)
+                let routeCoords = downsampled.map { (latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+
+                return WorkoutEnrichmentData(
+                    title: nil,  // HealthKit doesn't have good titles
+                    preciseStartDate: hkWorkout.startDate,
+                    routeCoordinates: routeCoords,
+                    stravaActivityId: nil,
+                    averageHeartRate: nil,
+                    maxHeartRate: nil,
+                    averagePower: nil,
+                    normalizedPower: nil,
+                    totalElevationGain: nil
+                )
+            }
+
+            return nil
+        } catch {
+            print("[TPImport] HealthKit enrichment error: \(error)")
+            return nil
+        }
+    }
+}
+
+// MARK: - Enrichment Data
+
+/// Data extracted from Strava or HealthKit to enrich a TP workout
+struct WorkoutEnrichmentData {
+    let title: String?
+    let preciseStartDate: Date?
+    let routeCoordinates: [(latitude: Double, longitude: Double)]?
+    let stravaActivityId: Int?
+    let averageHeartRate: Int?
+    let maxHeartRate: Int?
+    let averagePower: Int?
+    let normalizedPower: Int?
+    let totalElevationGain: Double?
 }
 
 // MARK: - Preview

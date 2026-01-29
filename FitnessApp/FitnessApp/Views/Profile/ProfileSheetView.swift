@@ -230,6 +230,12 @@ struct ProfileSheetView: View {
                     SettingsRow(icon: "heart.fill", iconColor: Color(red: 1, green: 0.2, blue: 0.3), title: "Apple Health")
                 }
 
+                NavigationLink {
+                    StravaSettingsView()
+                } label: {
+                    SettingsRow(icon: "figure.outdoor.cycle", iconColor: .orange, title: "Strava")
+                }
+
                 Button {
                     showingTPImportSheet = true
                 } label: {

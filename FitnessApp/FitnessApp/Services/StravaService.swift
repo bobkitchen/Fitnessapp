@@ -18,11 +18,16 @@ final class StravaService: NSObject {
 
     // MARK: - Configuration
 
-    /// Strava API credentials - these should be set from your Strava API application
-    /// Get yours at: https://www.strava.com/settings/api
-    private static let clientId = "YOUR_CLIENT_ID"  // TODO: Replace with actual client ID
-    private static let clientSecret = "YOUR_CLIENT_SECRET"  // TODO: Replace with actual client secret
-    private static let redirectUri = "fitnesscoach://strava"
+    /// Strava API credentials - read from Keychain with fallback to Secrets.swift
+    private static var clientId: String {
+        KeychainService.getStravaClientId() ?? AppSecrets.stravaClientId
+    }
+
+    private static var clientSecret: String {
+        KeychainService.getStravaClientSecret() ?? AppSecrets.stravaClientSecret
+    }
+
+    private static let redirectUri = "fitnesscoach://localhost/callback"
     private static let scope = "activity:read_all"
 
     private static let authURL = "https://www.strava.com/oauth/authorize"
@@ -83,6 +88,7 @@ final class StravaService: NSObject {
         }
 
         // Use ASWebAuthenticationSession for OAuth
+        // Custom URL scheme allows ASWebAuthenticationSession to intercept the redirect
         let callbackURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
             let session = ASWebAuthenticationSession(
                 url: authURL,
@@ -251,14 +257,36 @@ final class StravaService: NSObject {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        // Note: Don't use .convertFromSnakeCase - we have explicit CodingKeys in models
 
-        let activities = try decoder.decode([StravaActivity].self, from: data)
+        // Debug: Print raw JSON to see what Strava returns
+        if let jsonString = String(data: data, encoding: .utf8) {
+            print("[Strava] Raw API response (first 2000 chars): \(String(jsonString.prefix(2000)))")
+        }
 
-        lastSyncDate = Date()
-        print("[Strava] Fetched \(activities.count) activities")
-
-        return activities
+        do {
+            let activities = try decoder.decode([StravaActivity].self, from: data)
+            lastSyncDate = Date()
+            print("[Strava] Fetched \(activities.count) activities")
+            return activities
+        } catch let decodingError as DecodingError {
+            switch decodingError {
+            case .keyNotFound(let key, let context):
+                print("[Strava] Decoding error - Missing key: '\(key.stringValue)' in \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+            case .typeMismatch(let type, let context):
+                print("[Strava] Decoding error - Type mismatch: expected \(type) at \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+            case .valueNotFound(let type, let context):
+                print("[Strava] Decoding error - Value not found: \(type) at \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+            case .dataCorrupted(let context):
+                print("[Strava] Decoding error - Data corrupted at \(context.codingPath.map { $0.stringValue }.joined(separator: ".")): \(context.debugDescription)")
+            @unknown default:
+                print("[Strava] Decoding error: \(decodingError)")
+            }
+            throw decodingError
+        } catch let otherError {
+            print("[Strava] Other error: \(otherError)")
+            throw otherError
+        }
     }
 
     /// Fetch detailed activity with streams (for route data)
@@ -281,7 +309,7 @@ final class StravaService: NSObject {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        // Note: Don't use .convertFromSnakeCase - we have explicit CodingKeys in models
 
         return try decoder.decode(StravaActivityDetail.self, from: data)
     }
@@ -504,15 +532,15 @@ struct StravaAthlete: Codable {
 
 struct StravaActivity: Codable, Identifiable {
     let id: Int
-    let name: String
-    let type: String
+    let name: String?  // Optional - some activities may not have names
+    let type: String?  // Optional - fallback to sportType
     let sportType: String?
     let startDate: Date
-    let startDateLocal: Date
+    let startDateLocal: Date?  // Optional - not always present
     let timezone: String?
-    let movingTime: Int
-    let elapsedTime: Int
-    let distance: Double
+    let movingTime: Int?  // Optional - use elapsedTime as fallback
+    let elapsedTime: Int?  // Optional
+    let distance: Double?  // Optional - indoor activities may have 0
     let totalElevationGain: Double?
     let averageSpeed: Double?
     let maxSpeed: Double?
@@ -551,31 +579,46 @@ struct StravaActivity: Codable, Identifiable {
         case sufferScore = "suffer_score"
     }
 
+    /// Activity name with fallback
+    var displayName: String {
+        name ?? "Untitled Activity"
+    }
+
+    /// Activity type with fallback to sportType
+    var activityType: String {
+        type ?? sportType ?? "Unknown"
+    }
+
     /// Map Strava activity type to our ActivityCategory
     var activityCategory: ActivityCategory {
-        let lowerType = type.lowercased()
+        let lowerType = activityType.lowercased()
         switch lowerType {
-        case "ride", "virtualride", "ebikeride", "handcycle", "velomobile":
+        // Cycling variants
+        case "ride", "virtualride", "ebikeride", "handcycle", "velomobile",
+             "mountainbikeride", "gravelride", "emountainbikeride":
             return .bike
+        // Running variants
         case "run", "virtualrun", "trailrun":
             return .run
+        // Swimming
         case "swim":
             return .swim
-        case "weighttraining", "crossfit", "workout":
+        // Strength/gym
+        case "weighttraining", "crossfit", "workout", "highintensityintervaltraining":
             return .strength
         default:
             return .other
         }
     }
 
-    /// Duration in seconds
+    /// Duration in seconds (use movingTime, fallback to elapsedTime)
     var durationSeconds: Double {
-        Double(movingTime)
+        Double(movingTime ?? elapsedTime ?? 0)
     }
 
     /// Distance in meters
     var distanceMeters: Double {
-        distance
+        distance ?? 0
     }
 }
 

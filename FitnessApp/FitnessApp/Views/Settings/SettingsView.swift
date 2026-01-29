@@ -115,17 +115,53 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Data Section
+    // MARK: - Data Sources Section
 
     @ViewBuilder
     private var dataSection: some View {
-        Section("Data & Sync") {
+        Section("Data Sources") {
             NavigationLink {
                 HealthKitSettingsView()
             } label: {
-                Label("Apple Health", systemImage: "heart.fill")
+                HStack {
+                    Label("Apple Health", systemImage: "heart.fill")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.subheadline)
+                }
             }
 
+            NavigationLink {
+                StravaSettingsView()
+            } label: {
+                HStack {
+                    Label("Strava", systemImage: "figure.outdoor.cycle")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    // Show connection status
+                    if KeychainService.hasStravaCredentials {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.subheadline)
+                    } else {
+                        Text("Not Connected")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+
+        // TSS Calibration Section - separate from data sources
+        Section("TSS Calibration") {
+            // TSS Accuracy Card
+            TSSAccuracyCard()
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+
+            // TrainingPeaks Import
             Button {
                 showingTPImportSheet = true
             } label: {
@@ -137,11 +173,13 @@ struct SettingsView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+        }
 
+        Section("Data Management") {
             NavigationLink {
                 DataManagementView()
             } label: {
-                Label("Data Management", systemImage: "externaldrive")
+                Label("Export & Delete Data", systemImage: "externaldrive")
             }
         }
     }
@@ -759,16 +797,6 @@ struct HealthKitSettingsView: View {
                 Label("Full Historical Resync", systemImage: "arrow.counterclockwise")
             }
             .disabled(workoutSyncService?.isSyncing == true || !healthKitService.isAuthorized)
-        }
-
-        // Strava Integration Section
-        StravaSettingsSection()
-
-        // TSS Learning Section
-        Section("TSS Accuracy") {
-            TSSAccuracyCard()
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
         }
 
         // Health Permissions Section - always visible

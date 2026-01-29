@@ -32,3 +32,7 @@ fastlane/test_output
 
 # Code Injection
 iOSInjectionProject/
+
+# Secrets (API keys and credentials)
+**/Secrets.swift
+!/Secrets.template.txt

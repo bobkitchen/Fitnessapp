@@ -109,15 +109,27 @@ final class HealthKitService {
         }
 
         print("[HealthKit] Starting authorization request...")
-        print("[HealthKit] Requesting \(allReadTypes.count) read types")
+        print("[HealthKit] Requesting \(allReadTypes.count) read types + \(characteristicTypes.count) characteristic types")
+
+        // Check current authorization status before requesting
+        let sampleType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
+        let currentStatus = core.healthStore.authorizationStatus(for: sampleType)
+        print("[HealthKit] Current heart rate auth status: \(currentStatus.rawValue) (0=notDetermined, 1=denied, 2=authorized)")
 
         do {
+            let allTypes = Set(allReadTypes.map { $0 as HKObjectType }).union(characteristicTypes)
+            print("[HealthKit] Calling requestAuthorization with \(allTypes.count) total types...")
+
             try await core.healthStore.requestAuthorization(
                 toShare: [],
-                read: Set(allReadTypes.map { $0 as HKObjectType }).union(characteristicTypes)
+                read: allTypes
             )
 
             print("[HealthKit] Authorization completed successfully")
+
+            // Check status after
+            let newStatus = core.healthStore.authorizationStatus(for: sampleType)
+            print("[HealthKit] New heart rate auth status: \(newStatus.rawValue)")
 
             await MainActor.run {
                 isAuthorized = true
